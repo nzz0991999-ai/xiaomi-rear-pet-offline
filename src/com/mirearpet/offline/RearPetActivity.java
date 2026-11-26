@@ -15,7 +15,9 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -49,6 +51,7 @@ public class RearPetActivity extends Activity {
     private boolean hasEverBeenOnRearDisplay = false;
     private boolean stoppedOnDisplay0 = false;
     private volatile boolean currentEcoBlack = false;
+    private boolean lastJsSuspended = false;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final DisplayManager.DisplayListener rearDisplayListener = new DisplayManager.DisplayListener() {
         @Override
@@ -61,8 +64,13 @@ public class RearPetActivity extends Activity {
         public void onDisplayChanged(int displayId) {
             if (isFrontFullscreenMode() || displayId == 0) return;
             if (displayId != currentDisplayId()) return;
-            boolean awake = ShizukuBridge.isDisplayAwake(RearPetActivity.this, displayId);
-            setJsSuspended(!awake);
+            int state = ShizukuBridge.getDisplayState(RearPetActivity.this, displayId);
+            boolean off = (state == android.view.Display.STATE_OFF);
+            if (off != lastJsSuspended) {
+                lastJsSuspended = off;
+                DiagLog.log("Web", "d=" + displayId + " state=" + state + (off ? " 熄屏暂停" : " 亮屏恢复"));
+                setJsSuspended(off);
+            }
         }
     };
     private final Runnable retryRunnable = () -> {
@@ -353,21 +361,28 @@ public class RearPetActivity extends Activity {
         ws.setLoadWithOverviewMode(true);
         webView.addJavascriptInterface(new PetJsBridge(), "AndroidPetBridge");
 
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage cm) {
+                if (cm != null && cm.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    DiagLog.log("WebErr", "L" + cm.lineNumber() + ": " + cm.message());
+                }
+                return super.onConsoleMessage(cm);
+            }
+        });
+
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 int dId = currentDisplayId();
-                DiagLog.log("Web", "onPageFinished d=" + dId
+                int dState = ShizukuBridge.getDisplayState(RearPetActivity.this, dId);
+                DiagLog.log("Web", "onPageFinished d=" + dId + " st=" + dState
                         + " view=" + view.getWidth() + "x" + view.getHeight());
                 if (url != null && !url.startsWith("about:")) {
                     statusOverlay.setVisibility(View.GONE);
-                    if (!isFrontFullscreenMode() && dId != 0) {
-                        if (currentEcoBlack) {
-                            view.evaluateJavascript("window.setPetEcoBlack && window.setPetEcoBlack(true);", null);
-                        } else if (!ShizukuBridge.isDisplayAwake(RearPetActivity.this, dId)) {
-                            view.evaluateJavascript("window.setPetSuspended && window.setPetSuspended(true);", null);
-                        }
+                    if (!isFrontFullscreenMode() && dId != 0 && currentEcoBlack) {
+                        view.evaluateJavascript("window.setPetEcoBlack && window.setPetEcoBlack(true);", null);
                     }
                 }
             }
@@ -441,11 +456,12 @@ public class RearPetActivity extends Activity {
         ensureWebViewReadyIfOnTargetDisplay();
         if (!isFrontFullscreenMode() && !hasEverBeenOnRearDisplay && currentDisplayId() == 0) {
             handler.removeCallbacks(autoHideOnDisplay0Runnable);
-            handler.postDelayed(autoHideOnDisplay0Runnable, 120);
+            handler.postDelayed(autoHideOnDisplay0Runnable, 30);
         }
         if (webView != null) {
             webView.onResume();
             if (!isFrontFullscreenMode() && currentDisplayId() != 0 && !currentEcoBlack) {
+                lastJsSuspended = false;
                 setJsSuspended(false);
             }
         }
@@ -509,6 +525,7 @@ public class RearPetActivity extends Activity {
         if (hasFocus) {
             applyImmersive();
             if (!isFrontFullscreenMode() && currentDisplayId() != 0 && !currentEcoBlack) {
+                lastJsSuspended = false;
                 setJsSuspended(false);
             }
         }

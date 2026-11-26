@@ -1129,7 +1129,7 @@
               <h4>4. 接入 Agent 后背屏没反应 & 背屏手势</h4>
               <ul>
                 <li><b>没反应先重启软件 & 信任钩子</b>：在卡片 1 点完「一键接入」后，务必<b>完全退出并重开一次</b>对应 AI 软件；如果使用的是 <b>Codex</b>，重启后还需进入 <b>Codex 设置 → Hooks</b>（或在命令行 Codex 输入 <code>/hooks</code>）逐条<b>信任</b>「Mi Rear AI Pet status」钩子（Codex 安全机制默认拦截未信任的外部 Hook）。</li>
-                <li><b>背屏手势说明</b>：单击左/右眼眨眼，点眉心雷达审视，左右轻滑触发超频/无语彩蛋，<b>单指长按 2 秒</b>调出校准面板（支持一键重置默认）。</li>
+                <li><b>背屏手势说明</b>：单击左/右眼眨眼，点眉心雷达审视，<b>单指长按 2 秒</b>调出校准面板（支持一键重置默认）。</li>
                 <li><b>遇到问题反馈</b>：展开手机 App 最底部的「诊断日志」点「复制日志」即可发给作者排查。</li>
               </ul>
             </div>
@@ -1200,7 +1200,7 @@
         <button class="btn active" id="mobFullscreenBtn">进入全屏</button>
       </div>
       <div style="font-size:10px; color:rgba(255,255,255,0.45); line-height:1.4;">
-        单击大眼睛互动 · 左右轻滑彩蛋 · 单指长按 2 秒打开菜单切色与校准
+        单击大眼睛互动 · 单指长按 2 秒打开菜单切色与校准
       </div>
     </div>
   </div>
@@ -1650,6 +1650,7 @@
 
       // ================= EXPRESSIVE BIG-EYES ENGINE (ULTRA-LOW-POWER ADAPTIVE FPS) =================
       let cw = 300, ch = 200, dpr = 1;
+      let hasRenderedFrame = false;
       let loopTimerId = null;
       let loopRafId = null;
       let lastShiftAt = 0;
@@ -1697,7 +1698,10 @@
         if (petSuspended === next) return;
         petSuspended = next;
         if (petSuspended) {
-          clearLoopHandles();
+          // Never leave the canvas completely blank if suspended before Frame 0 rendered
+          if (hasRenderedFrame) {
+            clearLoopHandles();
+          }
         } else {
           resumeRenderLoop();
         }
@@ -2313,10 +2317,14 @@
 
       function tick(now) {
         loopRafId = null;
-        if (petSuspended || petEcoBlack) {
-          if (petEcoBlack) paintPureBlack();
+        if (petEcoBlack) {
+          paintPureBlack();
           return;
         }
+        if (petSuspended && hasRenderedFrame) {
+          return;
+        }
+        hasRenderedFrame = true;
         const dt = Math.min(0.08, Math.max(0.001, (now - lastTs) / 1000));
         lastTs = now;
         const t = now * 0.001;

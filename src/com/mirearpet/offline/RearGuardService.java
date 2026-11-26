@@ -417,6 +417,10 @@ public class RearGuardService extends Service {
             if (!ecoFaceDownEnabled && ecoSleeping) {
                 exitEcoSleep("switch_off");
             }
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.notify(NOTIF_ID, buildNotification());
+            }
             return START_STICKY;
         }
 
@@ -493,8 +497,8 @@ public class RearGuardService extends Service {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm != null) {
             NotificationChannel ch = new NotificationChannel(
-                    CHANNEL_ID, "背屏桌宠离线版守护", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("背屏亮起或切回默认壁纸时自动重新投射桌宠");
+                    CHANNEL_ID, "背屏桌宠守护", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("保持背屏桌宠后台常驻，息屏或切走后自动拉回");
             nm.createNotificationChannel(ch);
         }
 
@@ -510,8 +514,12 @@ public class RearGuardService extends Service {
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
 
-        return b.setContentTitle("背屏桌宠（离线版）守护中")
-                .setContentText("目标背屏 displayId=" + guardDisplayId + " · 低功耗事件驱动")
+        String subtitle = ecoFaceDownEnabled
+                ? "息屏防切走 · 贴桌自动黑屏省电"
+                : "息屏与切走后自动恢复大眼睛";
+
+        return b.setContentTitle("背屏桌宠守护中")
+                .setContentText(subtitle)
                 .setSmallIcon(R.drawable.ic_launcher)
                 .setOngoing(true)
                 .setContentIntent(openApp)

@@ -392,7 +392,8 @@ public final class RearShellHelper {
             System.exit(1);
         }
         // Extra settle window so Android onStop() & SurfaceFlinger Display-0 detach fully commit
-        try { Thread.sleep(420); } catch (InterruptedException ignored) {}
+        // (Measured on Xiaomi 17 Pro Max HyperOS: onStop(d=0) fires ~600ms after onPause(d=0))
+        try { Thread.sleep(820); } catch (InterruptedException ignored) {}
 
         // Re-check blocker right before moving to Display 1 in case Camera opened mid-transition
         blocker = findYieldBlocker(atm, getRoots, pkg, displayId);
@@ -503,8 +504,8 @@ public final class RearShellHelper {
             System.exit(1);
         }
 
-        // Wait 420ms AFTER ActivityTaskManager confirms visible==false so onStop() + SurfaceFlinger detach finish
-        try { Thread.sleep(420); } catch (InterruptedException ignored) {}
+        // Wait 820ms AFTER ActivityTaskManager confirms visible==false so HyperOS onStop(d=0) (~600ms) + SurfaceFlinger detach finish
+        try { Thread.sleep(820); } catch (InterruptedException ignored) {}
 
         // Refresh rootId right before move in case task changed
         TaskInfo readyToMove = findTask(atm, getRoots, pkg, "RearPetActivity");
@@ -568,7 +569,6 @@ public final class RearShellHelper {
             String out = runCmd("am", "start", "-W",
                     "--display", "0",
                     "-n", pkg + "/.MainActivity",
-                    "--activity-new-task",
                     "--activity-single-top");
             System.out.println("LOG:bring_main=" + oneLine(out, 140));
         } else {

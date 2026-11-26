@@ -120,7 +120,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
     @Override
     public void onLogUpdated() {
         if (diagLogView != null) {
-            diagLogView.setText(DiagLog.getTailText(40));
+            diagLogView.setText(DiagLog.getTailText(20));
         }
     }
 
@@ -317,7 +317,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         card1.addView(moodRow);
 
         TextView gestureHint = new TextView(this);
-        gestureHint.setText("背屏玩法：单击大眼睛互动 · 左右轻滑触发彩蛋 · 单指长按背屏 2 秒打开菜单切换颜色与校准位置");
+        gestureHint.setText("背屏玩法：单击大眼睛互动 · 单指长按背屏 2 秒打开菜单切换颜色与校准位置");
         gestureHint.setTextColor(Color.parseColor("#7D95AD"));
         gestureHint.setTextSize(11.5f);
         gestureHint.setLineSpacing(dp(2), 1f);
@@ -518,7 +518,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         dbrLp.bottomMargin = dp(8);
         diagBtnRow.setLayoutParams(dbrLp);
 
-        Button copyLogBtn = makeButton("复制日志", Color.parseColor("#0D3B4C"), Color.parseColor("#8CF6FF"), Color.parseColor("#34E8FF"));
+        Button copyLogBtn = makeButton("复制精简日志", Color.parseColor("#0D3B4C"), Color.parseColor("#8CF6FF"), Color.parseColor("#34E8FF"));
         copyLogBtn.setTextSize(12f);
         LinearLayout.LayoutParams clLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f);
         clLp.rightMargin = dp(6);
@@ -545,7 +545,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         diagContentBox.addView(diagBtnRow);
 
         diagLogView = new TextView(this);
-        diagLogView.setText(DiagLog.getTailText(40));
+        diagLogView.setText(DiagLog.getTailText(20));
         diagLogView.setTextColor(Color.parseColor("#9BC0D9"));
         diagLogView.setTextSize(10f);
         diagLogView.setTypeface(Typeface.MONOSPACE);
@@ -666,8 +666,16 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         try {
             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm != null) {
-                cm.setPrimaryClip(ClipData.newPlainText("MiRearPetOffline_DiagLog", DiagLog.getAllText()));
-                showToast("已复制日志，直接粘贴发送即可");
+                int did = prefs.getInt("display_id", 1);
+                String header = "v" + AppUpdater.getLocalVersionName(this)
+                        + " " + Build.MODEL
+                        + " A" + Build.VERSION.RELEASE
+                        + " Shz=" + (ShizukuBridge.isPermissionGranted() ? "OK" : (ShizukuBridge.isBinderAlive() ? "NO_PERM" : "OFF"))
+                        + " Grd=" + (RearGuardService.isRunning ? "ON" : "OFF")
+                        + " d" + did + "=" + ShizukuBridge.getDisplayState(this, did);
+                String compact = DiagLog.getCompactSummary(header, 420);
+                cm.setPrimaryClip(ClipData.newPlainText("MiRearPetOffline_DiagLog", compact));
+                showToast("已复制精简日志(" + compact.length() + "字)，可直接发抖音/微信");
             }
         } catch (Throwable t) {
             showToast("复制失败: " + t.getMessage());

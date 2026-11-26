@@ -357,13 +357,23 @@ public final class ShizukuBridge {
         return secs.get(0).getDisplayId();
     }
 
-    public static boolean isDisplayAwake(Context ctx, int displayId) {
+    public static int getDisplayState(Context ctx, int displayId) {
         DisplayManager dm = (DisplayManager) ctx.getSystemService(Context.DISPLAY_SERVICE);
-        if (dm == null) return false;
+        if (dm == null) return Display.STATE_UNKNOWN;
         Display d = dm.getDisplay(displayId);
-        if (d == null) return false;
-        int state = d.getState();
-        return state == Display.STATE_ON || state == Display.STATE_DOZE || state == Display.STATE_DOZE_SUSPEND;
+        return d != null ? d.getState() : Display.STATE_UNKNOWN;
+    }
+
+    public static boolean isDisplayAwake(Context ctx, int displayId) {
+        int state = getDisplayState(ctx, displayId);
+        return state == Display.STATE_ON
+                || state == Display.STATE_DOZE
+                || state == Display.STATE_DOZE_SUSPEND
+                || state == Display.STATE_ON_SUSPEND;
+    }
+
+    public static boolean isDisplayDefinitelyOff(Context ctx, int displayId) {
+        return getDisplayState(ctx, displayId) == Display.STATE_OFF;
     }
 
     public interface LaunchCallback {
