@@ -1,9 +1,11 @@
 package com.mirearpet.offline;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -41,10 +43,28 @@ public class RearPetActivity extends Activity {
     private FrameLayout rootLayout;
     private WebView webView;
     private TextView statusOverlay;
+    private DisplayManager displayManager;
     private int webViewCreatedDisplayId = -1;
+    private boolean createdOnDisplay0 = false;
     private boolean hasEverBeenOnRearDisplay = false;
     private boolean stoppedOnDisplay0 = false;
+    private volatile boolean currentEcoBlack = false;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final DisplayManager.DisplayListener rearDisplayListener = new DisplayManager.DisplayListener() {
+        @Override
+        public void onDisplayAdded(int displayId) {}
+
+        @Override
+        public void onDisplayRemoved(int displayId) {}
+
+        @Override
+        public void onDisplayChanged(int displayId) {
+            if (isFrontFullscreenMode() || displayId == 0) return;
+            if (displayId != currentDisplayId()) return;
+            boolean awake = ShizukuBridge.isDisplayAwake(RearPetActivity.this, displayId);
+            setJsSuspended(!awake);
+        }
+    };
     private final Runnable retryRunnable = () -> {
         if (webView != null && !isFinishing()) {
             DiagLog.log("Web", "重试加载本地桌宠");
@@ -110,6 +130,40 @@ public class RearPetActivity extends Activity {
         }
     }
 
+    public static void setEcoBlackIfRunning(boolean ecoBlack) {
+        RearPetActivity act = rearInstanceRef.get();
+        if (act != null && !act.isFinishing() && !act.isDestroyed()) {
+            act.currentEcoBlack = ecoBlack;
+            act.runOnUiThread(() -> {
+                if (!act.isFrontFullscreenMode() && act.currentDisplayId() != 0) {
+                    if (ecoBlack) {
+                        act.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    } else {
+                        act.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    }
+                }
+                if (act.webView != null) {
+                    String js = "window.setPetEcoBlack && window.setPetEcoBlack(" + ecoBlack + ");";
+                    if (!ecoBlack) {
+                        js += "window.setPetSuspended && window.setPetSuspended(false);";
+                    }
+                    act.webView.evaluateJavascript(js, null);
+                }
+            });
+        }
+    }
+
+    private void setJsSuspended(boolean suspended) {
+        runOnUiThread(() -> {
+            if (webView != null && !isFinishing()) {
+                webView.evaluateJavascript(
+                        "window.setPetSuspended && window.setPetSuspended(" + suspended + ");",
+                        null
+                );
+            }
+        });
+    }
+
     private final class PetJsBridge {
         @JavascriptInterface
         public String getConfigJson() {
@@ -132,6 +186,17 @@ public class RearPetActivity extends Activity {
             if (mood == null || mood.isEmpty()) return;
             getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString("pet_mood", mood).apply();
         }
+
+        @JavascriptInterface
+        public void onUserTouchWake() {
+            currentEcoBlack = false;
+            runOnUiThread(() -> {
+                if (!isFrontFullscreenMode() && currentDisplayId() != 0) {
+                    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
+            });
+            RearGuardService.notifyUserTouchWake();
+        }
     }
 
     @Override
@@ -139,11 +204,16 @@ public class RearPetActivity extends Activity {
         super.onCreate(savedInstanceState);
         if (!isFrontFullscreenMode()) {
             rearInstanceRef = new WeakReference<>(this);
+            createdOnDisplay0 = (currentDisplayId() == 0);
+            displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+            if (displayManager != null) {
+                displayManager.registerDisplayListener(rearDisplayListener, handler);
+            }
         } else {
             frontInstanceRef = new WeakReference<>(this);
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
 
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setBackgroundColor(Color.BLACK);
 
         rootLayout = new FrameLayout(this);
@@ -189,12 +259,18 @@ public class RearPetActivity extends Activity {
             // Keep pet visible on Display 1 even when the front screen locks, and restore full touch input!
             //noinspection deprecation
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED);
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            if (!currentEcoBlack) {
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
         } else {
-            // On Display 0 staging: NEVER touch front lockscreen and NEVER intercept/freeze front touches!
+            // On Display 0 staging: NEVER touch front lockscreen, NEVER keep Display 0 awake,
+            // and NEVER intercept/freeze front touches!
             //noinspection deprecation
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED);
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
         }
     }
@@ -232,8 +308,18 @@ public class RearPetActivity extends Activity {
         if (!isFrontFullscreenMode() && dId != 0) {
             handler.removeCallbacks(autoHideOnDisplay0Runnable);
             handler.removeCallbacks(frontStuckWatchdog);
-            if (!hasEverBeenOnRearDisplay && !stoppedOnDisplay0) {
-                DiagLog.log("PetAct", "提示：抵达背屏 d=" + dId + " 时 stoppedOnDisplay0=false");
+            // HARD SAFETY GATE:
+            // If this Activity was staged on Display 0 and somehow moved to Display 1 WITHOUT ever completing
+            // onStop(d=0), HyperOS SurfaceFlinger can leak a frozen 976x596 WebView on the front screen!
+            // Refuse to create WebView and self-abort cleanly so the user's front screen is NEVER locked up.
+            if (!hasEverBeenOnRearDisplay && createdOnDisplay0 && !stoppedOnDisplay0) {
+                DiagLog.log("PetAct", "安全熔断：抵达背屏 d=" + dId + " 前未完成 onStop(d=0)，自动退出以防止正面卡死！");
+                try {
+                    finishAndRemoveTask();
+                } catch (Throwable ignored) {
+                    finish();
+                }
+                return;
             }
             hasEverBeenOnRearDisplay = true;
         }
@@ -349,7 +435,12 @@ public class RearPetActivity extends Activity {
             handler.removeCallbacks(autoHideOnDisplay0Runnable);
             handler.postDelayed(autoHideOnDisplay0Runnable, 120);
         }
-        if (webView != null) webView.onResume();
+        if (webView != null) {
+            webView.onResume();
+            if (!isFrontFullscreenMode() && currentDisplayId() != 0 && !currentEcoBlack) {
+                setJsSuspended(false);
+            }
+        }
         logLifecycle("onResume");
     }
 
@@ -383,6 +474,10 @@ public class RearPetActivity extends Activity {
         logLifecycle("onDestroy");
         handler.removeCallbacks(autoHideOnDisplay0Runnable);
         handler.removeCallbacks(frontStuckWatchdog);
+        if (displayManager != null) {
+            try { displayManager.unregisterDisplayListener(rearDisplayListener); } catch (Throwable ignored) {}
+            displayManager = null;
+        }
         if (!isFrontFullscreenMode()) {
             isVisible = false;
             activeDisplayId = -1;
@@ -403,7 +498,12 @@ public class RearPetActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) applyImmersive();
+        if (hasFocus) {
+            applyImmersive();
+            if (!isFrontFullscreenMode() && currentDisplayId() != 0 && !currentEcoBlack) {
+                setJsSuspended(false);
+            }
+        }
     }
 
     private void applyImmersive() {

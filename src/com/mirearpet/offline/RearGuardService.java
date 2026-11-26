@@ -10,36 +10,54 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.hardware.camera2.CameraManager;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Lightweight foreground guard service for Offline Rear Screen Pet.
+ * Lightweight, event-driven foreground guard service for Offline Rear Screen Pet.
+ * - Recovers Xiaomi default rear theme immediately even while front screen is locked.
+ * - Stops polling completely when Display 1 is OFF (0% idle wakeups).
+ * - Optional hardware-batched back-face-down eco sleep (phone lying screen-up on desk >= 6s):
+ *   blanks OLED to pure #000000 and releases Display-1 wakelock, then wakes & refronts instantly on lift.
  */
 public class RearGuardService extends Service {
     public static final String ACTION_START = "com.mirearpet.offline.GUARD_START";
     public static final String ACTION_STOP = "com.mirearpet.offline.GUARD_STOP";
     public static final String ACTION_REPIN_NOW = "com.mirearpet.offline.GUARD_REPIN_NOW";
+    public static final String ACTION_UPDATE_CONFIG = "com.mirearpet.offline.GUARD_UPDATE_CONFIG";
     public static volatile boolean isRunning = false;
     private static volatile RearGuardService activeInstance = null;
 
     private static final String CHANNEL_ID = "mi_rear_pet_offline_guard";
     private static final int NOTIF_ID = 8766;
+    private static final long FACE_DOWN_SLEEP_DELAY_MS = 6000L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private DisplayManager displayManager;
     private CameraManager cameraManager;
+    private SensorManager sensorManager;
+    private Sensor gravitySensor;
+    private boolean sensorRegistered = false;
     private final Set<String> activeCameraIds = new HashSet<>();
     private volatile boolean cameraGuardPaused = false;
+    private volatile boolean ecoFaceDownEnabled = true;
+    private volatile boolean ecoSleeping = false;
+    private volatile boolean keepAliveLockPaused = false;
     private volatile boolean repinInFlight = false;
     private int guardDisplayId = 1;
+    private long faceDownSinceMs = 0L;
     private long lastRepinAt = 0L;
     private long lastQuickRefrontAt = 0L;
     private long nextAllowedRepinAt = 0L;
@@ -51,13 +69,142 @@ public class RearGuardService extends Service {
         }
     }
 
+    public static void notifyUserTouchWake() {
+        RearGuardService svc = activeInstance;
+        if (svc != null && isRunning) {
+            svc.handler.post(() -> svc.exitEcoSleep("touch"));
+        }
+    }
+
+    private void syncKeepAliveLock() {
+        boolean shouldPause = cameraGuardPaused || !activeCameraIds.isEmpty() || ecoSleeping;
+        if (shouldPause == keepAliveLockPaused) return;
+        keepAliveLockPaused = shouldPause;
+        ShizukuBridge.sendKeepAliveCommand(shouldPause ? "pause_lock" : "resume_lock");
+    }
+
+    private void scheduleCheckLoop(long delayMs) {
+        handler.removeCallbacks(checkLoop);
+        if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+            handler.postDelayed(checkLoop, delayMs);
+        }
+    }
+
+    private void updateSensorRegistration() {
+        boolean want = isRunning && ecoFaceDownEnabled;
+        if (want == sensorRegistered) return;
+        if (sensorManager == null) {
+            sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        }
+        if (sensorManager == null) return;
+        if (want) {
+            if (gravitySensor == null) {
+                gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
+                if (gravitySensor == null) {
+                    gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+                }
+            }
+            if (gravitySensor != null) {
+                try {
+                    // Hardware sensor-hub batched 2Hz sampling (~0.1mA, <=0.5s instant lift wake)
+                    sensorRegistered = sensorManager.registerListener(
+                            gravityListener, gravitySensor, 500_000, 500_000, handler);
+                } catch (Throwable t) {
+                    DiagLog.log("Guard", "注册重力传感器失败: " + t.getMessage());
+                }
+            }
+        } else {
+            try {
+                sensorManager.unregisterListener(gravityListener);
+            } catch (Throwable ignored) {}
+            sensorRegistered = false;
+            faceDownSinceMs = 0L;
+        }
+    }
+
+    private void enterEcoSleep() {
+        if (!isRunning || ecoSleeping || !ecoFaceDownEnabled) return;
+        if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        if (!RearPetActivity.hasRearInstance()) return;
+        ecoSleeping = true;
+        handler.removeCallbacks(checkLoop);
+        handler.removeCallbacks(displayChangedRepinRunnable);
+        DiagLog.log("Guard", "手机正面朝上平放桌面 6 秒，背屏进入纯黑省电休眠");
+        RearPetActivity.setEcoBlackIfRunning(true);
+        syncKeepAliveLock();
+    }
+
+    private void exitEcoSleep(String reason) {
+        faceDownSinceMs = 0L;
+        if (!ecoSleeping) return;
+        ecoSleeping = false;
+        DiagLog.log("Guard", "退出背屏省电休眠(" + reason + ")，立即恢复大眼睛");
+        RearPetActivity.setEcoBlackIfRunning(false);
+        syncKeepAliveLock();
+        if (!isRunning || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        // Guaranteed instant wake & default-theme recovery even while front screen is locked!
+        if (RearPetActivity.hasRearInstance() && ShizukuBridge.isPermissionGranted()) {
+            handler.postDelayed(() -> {
+                if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+                    ShizukuBridge.sendKeepAliveCommand("refront");
+                }
+            }, 100);
+            handler.postDelayed(() -> {
+                if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+                    ShizukuBridge.sendKeepAliveCommand("refront");
+                }
+            }, 500);
+        } else {
+            handler.postDelayed(() -> {
+                if (isRunning && !ecoSleeping) {
+                    maybeRepin(false);
+                }
+            }, 500);
+        }
+        scheduleCheckLoop(1800);
+    }
+
+    private final SensorEventListener gravityListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            if (!isRunning || !ecoFaceDownEnabled || event == null || event.values == null || event.values.length < 3) {
+                return;
+            }
+            float x = event.values[0];
+            float y = event.values[1];
+            float z = event.values[2];
+            // Phone lying flat screen-up (back screen pressed against desk): z ≈ +9.8 m/s²
+            boolean isFlatBackDown = (z > 8.8f && Math.abs(x) < 2.2f && Math.abs(y) < 2.2f);
+            boolean isLiftedOrTilted = (z < 7.6f || Math.abs(x) > 3.2f || Math.abs(y) > 3.2f);
+
+            if (!ecoSleeping) {
+                if (isFlatBackDown && !cameraGuardPaused && activeCameraIds.isEmpty() && RearPetActivity.hasRearInstance()) {
+                    long now = SystemClock.uptimeMillis();
+                    if (faceDownSinceMs == 0L) {
+                        faceDownSinceMs = now;
+                    } else if ((now - faceDownSinceMs) >= FACE_DOWN_SLEEP_DELAY_MS) {
+                        enterEcoSleep();
+                    }
+                } else {
+                    faceDownSinceMs = 0L;
+                }
+            } else if (isLiftedOrTilted) {
+                exitEcoSleep("lifted");
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    };
+
     private void scheduleQuickRefrontAfterPause() {
+        if (ecoSleeping) return;
         handler.postDelayed(() -> tryQuickRefrontIfRearAwake("pet_paused_220ms"), 220);
         handler.postDelayed(() -> tryQuickRefrontIfRearAwake("pet_paused_620ms"), 620);
     }
 
     private void tryQuickRefrontIfRearAwake(String reason) {
-        if (!isRunning || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        if (!isRunning || ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
         if (ShizukuBridge.isProjectionInFlight()) return;
         if (RearPetActivity.isVisible && RearPetActivity.activeDisplayId == guardDisplayId) return;
         if (!RearPetActivity.hasRearInstance()) return;
@@ -73,34 +220,48 @@ public class RearGuardService extends Service {
     private final Runnable checkLoop = new Runnable() {
         @Override
         public void run() {
-            if (!isRunning) return;
+            if (!isRunning || ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+            if (!ShizukuBridge.isDisplayAwake(RearGuardService.this, guardDisplayId)) {
+                // Display 1 is OFF: stop polling completely (0% background wakeups).
+                // DisplayListener.onDisplayChanged(guardDisplayId) restarts checkLoop on wake.
+                return;
+            }
             maybeRepin(false);
-            handler.postDelayed(this, 2200);
+            long nextDelay = (RearPetActivity.isVisible && RearPetActivity.activeDisplayId == guardDisplayId)
+                    ? 12000L
+                    : 2500L;
+            handler.postDelayed(this, nextDelay);
         }
     };
 
     private final Runnable displayChangedRepinRunnable = () -> {
-        if (!isRunning || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        if (!isRunning || ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
         maybeRepin(false);
     };
 
     private final Runnable cameraResumeRunnable = () -> {
         if (!isRunning || !activeCameraIds.isEmpty()) return;
         cameraGuardPaused = false;
-        DiagLog.log("Guard", "相机已关闭，恢复背屏守护与常亮锁");
-        ShizukuBridge.sendKeepAliveCommand("resume_lock");
+        DiagLog.log("Guard", "相机已关闭，恢复背屏守护");
+        syncKeepAliveLock();
+        if (ecoSleeping) return;
         KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
         if (km != null && km.isKeyguardLocked()) {
             if (RearPetActivity.hasRearInstance() && ShizukuBridge.isPermissionGranted()) {
                 handler.postDelayed(() -> {
-                    if (isRunning && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+                    if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
                         ShizukuBridge.sendKeepAliveCommand("refront");
                     }
                 }, 250);
             }
         } else {
-            handler.postDelayed(() -> maybeRepin(false), 350);
+            handler.postDelayed(() -> {
+                if (isRunning && !ecoSleeping) {
+                    maybeRepin(false);
+                }
+            }, 350);
         }
+        scheduleCheckLoop(2000);
     };
 
     private final CameraManager.AvailabilityCallback cameraCallback = new CameraManager.AvailabilityCallback() {
@@ -110,10 +271,11 @@ public class RearGuardService extends Service {
             activeCameraIds.add(cameraId);
             handler.removeCallbacks(cameraResumeRunnable);
             handler.removeCallbacks(displayChangedRepinRunnable);
+            handler.removeCallbacks(checkLoop);
             cameraGuardPaused = true;
             if (!wasActive) {
                 DiagLog.log("Guard", "检测到相机开启(id=" + cameraId + ")，暂停背屏守护并释放背屏常亮锁");
-                ShizukuBridge.sendKeepAliveCommand("pause_lock");
+                syncKeepAliveLock();
             }
         }
 
@@ -130,9 +292,10 @@ public class RearGuardService extends Service {
     private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
         @Override
         public void onDisplayAdded(int displayId) {
-            if (displayId == guardDisplayId && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+            if (displayId == guardDisplayId && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
                 handler.removeCallbacks(displayChangedRepinRunnable);
-                handler.postDelayed(displayChangedRepinRunnable, 280);
+                handler.postDelayed(displayChangedRepinRunnable, 220);
+                scheduleCheckLoop(1500);
             }
         }
 
@@ -141,9 +304,15 @@ public class RearGuardService extends Service {
 
         @Override
         public void onDisplayChanged(int displayId) {
-            if (displayId == guardDisplayId && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+            if (displayId != guardDisplayId) return;
+            if (ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+            if (ShizukuBridge.isDisplayAwake(RearGuardService.this, guardDisplayId)) {
                 handler.removeCallbacks(displayChangedRepinRunnable);
-                handler.postDelayed(displayChangedRepinRunnable, 280);
+                handler.postDelayed(displayChangedRepinRunnable, 220);
+                scheduleCheckLoop(1500);
+            } else {
+                handler.removeCallbacks(displayChangedRepinRunnable);
+                handler.removeCallbacks(checkLoop);
             }
         }
     };
@@ -153,15 +322,15 @@ public class RearGuardService extends Service {
         public void onReceive(Context context, Intent intent) {
             String act = intent != null ? intent.getAction() : "";
             if (Intent.ACTION_SCREEN_OFF.equals(act)) {
-                if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+                if (ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
                 if (RearPetActivity.hasRearInstance() && ShizukuBridge.isPermissionGranted()) {
                     handler.postDelayed(() -> {
-                        if (!cameraGuardPaused && activeCameraIds.isEmpty()) {
+                        if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
                             ShizukuBridge.sendKeepAliveCommand("refront");
                         }
                     }, 150);
                     handler.postDelayed(() -> {
-                        if (!cameraGuardPaused && activeCameraIds.isEmpty()) {
+                        if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
                             ShizukuBridge.sendKeepAliveCommand("refront");
                         }
                     }, 500);
@@ -169,7 +338,13 @@ public class RearGuardService extends Service {
                 return;
             }
             if (Intent.ACTION_USER_PRESENT.equals(act)) {
-                handler.postDelayed(() -> maybeRepin(false), 450);
+                if (ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+                handler.postDelayed(() -> {
+                    if (isRunning && !ecoSleeping) {
+                        maybeRepin(false);
+                        scheduleCheckLoop(2500);
+                    }
+                }, 450);
             }
         }
     };
@@ -202,40 +377,62 @@ public class RearGuardService extends Service {
         String action = intent != null ? intent.getAction() : ACTION_START;
         if (ACTION_STOP.equals(action)) {
             isRunning = false;
+            ecoSleeping = false;
+            keepAliveLockPaused = false;
+            faceDownSinceMs = 0L;
+            RearPetActivity.setEcoBlackIfRunning(false);
+            updateSensorRegistration();
             ShizukuBridge.stopRearKeepAlive();
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return START_NOT_STICKY;
         }
 
+        boolean prefEco = getSharedPreferences(RearPetActivity.PREFS_NAME, MODE_PRIVATE)
+                .getBoolean("eco_facedown", true);
+        if (ACTION_UPDATE_CONFIG.equals(action)) {
+            ecoFaceDownEnabled = intent != null ? intent.getBooleanExtra("eco_facedown", prefEco) : prefEco;
+            if (!isRunning) return START_NOT_STICKY;
+            updateSensorRegistration();
+            if (!ecoFaceDownEnabled && ecoSleeping) {
+                exitEcoSleep("switch_off");
+            }
+            return START_STICKY;
+        }
+
         if (intent != null) {
             guardDisplayId = intent.getIntExtra("display_id", guardDisplayId);
+            ecoFaceDownEnabled = intent.getBooleanExtra("eco_facedown", prefEco);
         } else {
             guardDisplayId = getSharedPreferences(RearPetActivity.PREFS_NAME, MODE_PRIVATE)
                     .getInt("display_id", 1);
+            ecoFaceDownEnabled = prefEco;
         }
 
         boolean wasRunning = isRunning;
         isRunning = true;
+        ecoSleeping = false;
+        faceDownSinceMs = 0L;
+        RearPetActivity.setEcoBlackIfRunning(false);
         startForeground(NOTIF_ID, buildNotification());
         if (!wasRunning || !ACTION_REPIN_NOW.equals(action)) {
+            keepAliveLockPaused = false;
             ShizukuBridge.startRearKeepAlive(this, guardDisplayId);
-            if (cameraGuardPaused || !activeCameraIds.isEmpty()) {
-                ShizukuBridge.sendKeepAliveCommand("pause_lock");
-            }
+            syncKeepAliveLock();
         }
+        updateSensorRegistration();
 
         if (ACTION_REPIN_NOW.equals(action)) {
             maybeRepin(true);
+            scheduleCheckLoop(2500);
         } else {
-            handler.removeCallbacks(checkLoop);
-            handler.postDelayed(checkLoop, 2200);
+            scheduleCheckLoop(2500);
         }
         return START_STICKY;
     }
 
     private void maybeRepin(boolean force) {
-        if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        if (ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
         if (repinInFlight || ShizukuBridge.isProjectionInFlight()) return;
         if (!force && RearPetActivity.isVisible && RearPetActivity.activeDisplayId == guardDisplayId) return;
         if (!force && !ShizukuBridge.isDisplayAwake(this, guardDisplayId)) return;
@@ -294,7 +491,7 @@ public class RearGuardService extends Service {
                 : new Notification.Builder(this);
 
         return b.setContentTitle("背屏桌宠（离线版）守护中")
-                .setContentText("目标背屏 displayId=" + guardDisplayId + " · 免电脑离线运行")
+                .setContentText("目标背屏 displayId=" + guardDisplayId + " · 低功耗事件驱动")
                 .setSmallIcon(R.drawable.ic_launcher)
                 .setOngoing(true)
                 .setContentIntent(openApp)
@@ -309,10 +506,13 @@ public class RearGuardService extends Service {
             activeInstance = null;
         }
         isRunning = false;
+        ecoSleeping = false;
+        keepAliveLockPaused = false;
+        faceDownSinceMs = 0L;
+        RearPetActivity.setEcoBlackIfRunning(false);
+        updateSensorRegistration();
         ShizukuBridge.stopRearKeepAlive();
-        handler.removeCallbacks(checkLoop);
-        handler.removeCallbacks(cameraResumeRunnable);
-        handler.removeCallbacks(displayChangedRepinRunnable);
+        handler.removeCallbacksAndMessages(null);
         if (cameraManager != null) {
             try { cameraManager.unregisterAvailabilityCallback(cameraCallback); } catch (Throwable ignored) {}
         }

@@ -323,13 +323,11 @@ public final class RearShellHelper {
             }
             // Step A: Try silent in-place refront on Display 1 without ever touching Display 0
             System.out.println("LOG:guard_refront_inplace root=" + existing.rootId + " d=" + displayId);
+            tryMoveTaskToFront(existing.rootId);
             try {
                 moveRoot.invoke(atm, existing.rootId, displayId);
             } catch (Throwable ignored) {}
-            try {
-                Method setFocused = atmClass.getMethod("setFocusedRootTask", int.class);
-                setFocused.invoke(atm, existing.rootId);
-            } catch (Throwable ignored) {}
+            trySetFocusedRootTask(atm, atmClass, existing.rootId);
             try { Thread.sleep(220); } catch (InterruptedException ignored) {}
 
             TaskInfo afterInPlace = findTask(atm, getRoots, pkg, "RearPetActivity");
@@ -394,16 +392,24 @@ public final class RearShellHelper {
             System.exit(1);
         }
         // Extra settle window so Android onStop() & SurfaceFlinger Display-0 detach fully commit
-        try { Thread.sleep(360); } catch (InterruptedException ignored) {}
+        try { Thread.sleep(420); } catch (InterruptedException ignored) {}
 
         // Re-check blocker right before moving to Display 1 in case Camera opened mid-transition
         blocker = findYieldBlocker(atm, getRoots, pkg, displayId);
         if (blocker != null) {
+            tryRemoveTask(atm, atmClass, existing.rootId);
             System.out.println("OK:yield_mid:" + blocker);
             System.exit(0);
         }
 
-        moveRoot.invoke(atm, existing.rootId, displayId);
+        TaskInfo readyGuard = findTask(atm, getRoots, pkg, "RearPetActivity");
+        if (readyGuard == null || (readyGuard.displayId == 0 && readyGuard.visible)) {
+            if (readyGuard != null) tryRemoveTask(atm, atmClass, readyGuard.rootId);
+            System.out.println("FAIL:guard_regained_front_before_move");
+            System.exit(1);
+        }
+
+        moveRoot.invoke(atm, readyGuard.rootId, displayId);
         try { Thread.sleep(260); } catch (InterruptedException ignored) {}
         TaskInfo afterMove = findTask(atm, getRoots, pkg, "RearPetActivity");
         if (afterMove != null && afterMove.displayId == displayId) {
@@ -416,7 +422,10 @@ public final class RearShellHelper {
             System.exit(0);
         }
 
-        System.out.println("FAIL:guard_move_not_confirmed:root=" + existing.rootId);
+        if (afterMove != null && afterMove.displayId == 0) {
+            tryRemoveTask(atm, atmClass, afterMove.rootId);
+        }
+        System.out.println("FAIL:guard_move_not_confirmed:root=" + readyGuard.rootId);
         System.exit(1);
     }
 
@@ -494,8 +503,8 @@ public final class RearShellHelper {
             System.exit(1);
         }
 
-        // Wait 380ms AFTER ActivityTaskManager confirms visible==false so onStop() + SurfaceFlinger detach finish
-        try { Thread.sleep(380); } catch (InterruptedException ignored) {}
+        // Wait 420ms AFTER ActivityTaskManager confirms visible==false so onStop() + SurfaceFlinger detach finish
+        try { Thread.sleep(420); } catch (InterruptedException ignored) {}
 
         // Refresh rootId right before move in case task changed
         TaskInfo readyToMove = findTask(atm, getRoots, pkg, "RearPetActivity");

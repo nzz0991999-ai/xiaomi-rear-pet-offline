@@ -55,6 +55,8 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
     private Button openShizukuBtn;
     private Button rearBtn;
     private Switch guardSwitch;
+    private Switch ecoFaceDownSwitch;
+    private boolean syncingSwitches = false;
     private AppUpdater.UpdateInfo pendingUpdate;
     private long lastAutoUpdateCheckAt = 0L;
 
@@ -421,9 +423,53 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
 
         guardSwitch = new Switch(this);
         guardSwitch.setChecked(RearGuardService.isRunning);
-        guardSwitch.setOnCheckedChangeListener((btn, checked) -> toggleGuard(checked));
+        guardSwitch.setOnCheckedChangeListener((btn, checked) -> {
+            if (!syncingSwitches) toggleGuard(checked);
+        });
         guardRow.addView(guardSwitch);
         card2.addView(guardRow);
+
+        LinearLayout ecoRow = new LinearLayout(this);
+        ecoRow.setOrientation(LinearLayout.HORIZONTAL);
+        ecoRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams erLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        erLp.topMargin = dp(10);
+        ecoRow.setLayoutParams(erLp);
+
+        TextView ecoLabel = new TextView(this);
+        ecoLabel.setText("背面贴桌自动黑屏休眠（省电推荐）");
+        ecoLabel.setTextColor(Color.parseColor("#D5E3F0"));
+        ecoLabel.setTextSize(13f);
+        ecoLabel.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        ecoRow.addView(ecoLabel);
+
+        ecoFaceDownSwitch = new Switch(this);
+        ecoFaceDownSwitch.setChecked(prefs.getBoolean("eco_facedown", true));
+        ecoFaceDownSwitch.setOnCheckedChangeListener((btn, checked) -> {
+            if (syncingSwitches) return;
+            prefs.edit().putBoolean("eco_facedown", checked).apply();
+            if (RearGuardService.isRunning) {
+                Intent cfgIntent = new Intent(this, RearGuardService.class);
+                cfgIntent.setAction(RearGuardService.ACTION_UPDATE_CONFIG);
+                cfgIntent.putExtra("eco_facedown", checked);
+                startService(cfgIntent);
+            }
+            showToast(checked ? "已开启背面贴桌自动黑屏省电" : "已关闭背面贴桌休眠（背屏保持常亮）");
+        });
+        ecoRow.addView(ecoFaceDownSwitch);
+        card2.addView(ecoRow);
+
+        TextView ecoHint = new TextView(this);
+        ecoHint.setText("正面朝上平放桌面 6 秒后背屏纯黑休眠，拿起或翻转立即亮回（守护模式下生效）");
+        ecoHint.setTextColor(Color.parseColor("#7D95AD"));
+        ecoHint.setTextSize(11f);
+        ecoHint.setLineSpacing(dp(2), 1f);
+        LinearLayout.LayoutParams ehLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        ehLp.topMargin = dp(3);
+        ecoHint.setLayoutParams(ehLp);
+        card2.addView(ecoHint);
         root.addView(card2);
 
         // Card 3: Regular Phone / Tablet Fullscreen Mode
@@ -686,6 +732,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
             prefs.edit().putInt("display_id", did).apply();
             svc.setAction(RearGuardService.ACTION_START);
             svc.putExtra("display_id", did);
+            svc.putExtra("eco_facedown", prefs.getBoolean("eco_facedown", true));
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(svc);
             } else {
@@ -747,8 +794,13 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
             nextStepBanner.setBackground(roundedBg(Color.parseColor("#0D261D"), Color.parseColor("#2A7A58"), 12));
         }
 
+        syncingSwitches = true;
         if (guardSwitch != null) {
             guardSwitch.setChecked(RearGuardService.isRunning);
         }
+        if (ecoFaceDownSwitch != null) {
+            ecoFaceDownSwitch.setChecked(prefs.getBoolean("eco_facedown", true));
+        }
+        syncingSwitches = false;
     }
 }
