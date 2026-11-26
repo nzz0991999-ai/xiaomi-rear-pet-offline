@@ -3,6 +3,7 @@ package com.mirearpet.offline;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.hardware.Sensor;
@@ -418,6 +419,9 @@ public class RearPetActivity extends Activity {
             if (hasEverBeenOnRearDisplay) {
                 DiagLog.log("PetAct", "背屏实例被退回主屏(d=0)，自动退出以避免遮挡前景应用");
                 try {
+                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                } catch (Throwable ignored) {}
+                try {
                     moveTaskToBack(true);
                 } catch (Throwable ignored) {}
                 try {
@@ -450,6 +454,7 @@ public class RearPetActivity extends Activity {
                 return;
             }
             hasEverBeenOnRearDisplay = true;
+            ensureRearLandscapeOrientation(dId);
             updateEcoSensorRegistration();
         }
         if (webView != null && webViewCreatedDisplayId == dId) {
@@ -546,6 +551,18 @@ public class RearPetActivity extends Activity {
                 + " taskId=" + getTaskId());
     }
 
+    private void ensureRearLandscapeOrientation(int dId) {
+        if (isFrontFullscreenMode() || dId == 0 || !hasEverBeenOnRearDisplay) return;
+        int w = getResources().getDisplayMetrics().widthPixels;
+        int h = getResources().getDisplayMetrics().heightPixels;
+        if (w > 0 && h > 0 && w < h) {
+            DiagLog.log("Pet", "背屏竖屏(" + w + "x" + h + ")，请求横屏");
+            try {
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            } catch (Throwable ignored) {}
+        }
+    }
+
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
@@ -553,6 +570,7 @@ public class RearPetActivity extends Activity {
         applyImmersive();
         logLifecycle("onConfigChanged");
         ensureWebViewReadyIfOnTargetDisplay();
+        ensureRearLandscapeOrientation(currentDisplayId());
     }
 
     private void updateTrackedDisplayId() {

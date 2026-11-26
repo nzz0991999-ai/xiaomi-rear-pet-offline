@@ -46,6 +46,20 @@
       display: block;
     }
 
+    /* Android 17 / portrait rear-panel fallback: auto-rotate upright landscape */
+    body.rear-portrait-fix .preview-shell,
+    body.rear-portrait-fix #settingsModal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      right: auto;
+      bottom: auto;
+      width: 100vh;
+      height: 100vw;
+      transform: translate(-50%, -50%) rotate(-90deg);
+      transform-origin: center center;
+    }
+
     body:not(.preview-mode) .device-frame {
       width: 100%;
       height: 100%;
@@ -1724,12 +1738,17 @@
       };
 
       function resizeCanvas() {
+        const isPortraitRear = isStandalone && !isPreview && window.innerHeight > window.innerWidth;
+        document.body.classList.toggle("rear-portrait-fix", isPortraitRear);
         const rect = stage.getBoundingClientRect();
+        // Use clientWidth/clientHeight so rotated CSS fallback keeps true upright layout dimensions
+        const layoutW = stage.clientWidth || rect.width;
+        const layoutH = stage.clientHeight || rect.height;
         // Cap DPR to 1.25 on compact rear screen (4x lower GPU fill rate vs 2.5x, zero visible loss)
         const maxDpr = isStandalone ? 1.25 : 2.0;
         dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
-        cw = Math.max(100, rect.width);
-        ch = Math.max(100, rect.height);
+        cw = Math.max(100, layoutW);
+        ch = Math.max(100, layoutH);
         canvas.width = Math.round(cw * dpr);
         canvas.height = Math.round(ch * dpr);
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1844,6 +1863,14 @@
         pressStartAt = 0;
       }
 
+      function getCanvasPoint(e) {
+        const rect = canvas.getBoundingClientRect();
+        if (document.body.classList.contains("rear-portrait-fix")) {
+          return { x: rect.bottom - e.clientY, y: e.clientX - rect.left };
+        }
+        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      }
+
       canvas.addEventListener("pointerdown", (e) => {
         // Touching the rear screen ALWAYS wakes render loop immediately if suspended/eco-black
         if (petSuspended || petEcoBlack) {
@@ -1865,9 +1892,9 @@
         longPressed = false;
         downX = e.clientX;
         downY = e.clientY;
-        const rect = canvas.getBoundingClientRect();
-        pressCanvasX = e.clientX - rect.left;
-        pressCanvasY = e.clientY - rect.top;
+        const pt = getCanvasPoint(e);
+        pressCanvasX = pt.x;
+        pressCanvasY = pt.y;
         requestWakeLock();
         if (!isPreview) {
           clearPressHold();
@@ -1898,11 +1925,12 @@
         activePointers.delete(e.pointerId);
         clearPressHold();
         if (!longPressed) {
-          const rect = canvas.getBoundingClientRect();
-          const px = e.clientX - rect.left;
-          const py = e.clientY - rect.top;
-          const isSwipe = Math.abs(e.clientX - downX) > 28;
-          triggerTapInteraction(px, py, isSwipe);
+          const pt = getCanvasPoint(e);
+          const isPortrait = document.body.classList.contains("rear-portrait-fix");
+          const isSwipe = isPortrait
+            ? Math.abs(e.clientY - downY) > 28
+            : Math.abs(e.clientX - downX) > 28;
+          triggerTapInteraction(pt.x, pt.y, isSwipe);
         }
       });
 

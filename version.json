@@ -1,6 +1,6 @@
 {
-  "version_code": 7,
-  "version_name": "1.0.6",
+  "version_code": 8,
+  "version_name": "1.0.7",
   "apk_url": "https://github.com/nzz0991999-ai/xiaomi-rear-pet-offline/releases/latest/download/MiRearPet_Offline.apk",
-  "notes": "彻底修复「背面贴桌自动黑屏休眠」不触发问题：改用连续硬件加速度计 + 显式 5 秒定时器并下沉至背屏窗口内，无论是否开启守护模式，正面朝上平放 5 秒均可靠进入纯黑休眠，拿起瞬间亮回；日志按钮名称恢复为简洁的「复制日志」。"
+  "notes": "修复 Android 17（HyperOS 新版）背屏画面顺时针横倒 90° 问题：抵达背屏后自动请求横屏，并内置竖屏面板 -90° 自动矫正兜底，确保大眼睛、双摄避让与长按菜单全部摆正。"
 }
