@@ -1,0 +1,6 @@
+{
+  "version_code": 3,
+  "version_name": "1.0.2",
+  "apk_url": "https://github.com/nzz0991999-ai/xiaomi-rear-pet-offline/releases/latest/download/MiRearPet_Offline.apk",
+  "notes": "修复锁屏时双击背屏切回原主题不自动拉回问题；修复小米 17 Pro/Max 偶发投到正面卡住问题；新增 App 内一键检查更新（支持国内加速镜像）。"
+}
