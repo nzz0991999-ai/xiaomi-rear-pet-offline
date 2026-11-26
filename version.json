@@ -1,6 +1,6 @@
 {
-  "version_code": 4,
-  "version_name": "1.0.3",
+  "version_code": 5,
+  "version_name": "1.0.4",
   "apk_url": "https://github.com/nzz0991999-ai/xiaomi-rear-pet-offline/releases/latest/download/MiRearPet_Offline.apk",
-  "notes": "深度功耗优化（约降耗 60%~75%）：自适应低帧率 + 去除 GPU 阴影模糊 + 熄屏零绘制 + 背面贴桌 6 秒自动纯黑休眠（拿起即亮并自动拉回）；新增主屏防卡死硬熔断机制，彻底杜绝背屏画面投到正面卡住。"
+  "notes": "代码深度审查加固：移除 WebView 内置重复 WakeLock 确保贴桌休眠彻底息屏省电；守护进程意外断开自动自愈重连（锁屏拉回永不失效）；修复低帧率下弹簧物理步长让眨眼/弹跳与 60FPS 一致顺滑；优化平放重投状态同步与熄屏时钟零刷新。"
 }

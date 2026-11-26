@@ -59,6 +59,7 @@ public final class ShizukuBridge {
     private static final List<Listener> LISTENERS = new CopyOnWriteArrayList<>();
     private static volatile IRemoteProcess keepAliveProc;
     private static volatile java.io.OutputStream keepAliveStdin;
+    private static volatile long lastKeepAliveRespawnAt = 0L;
     private static volatile boolean projectionInFlight = false;
 
     public static boolean isProjectionInFlight() {
@@ -415,6 +416,7 @@ public final class ShizukuBridge {
                     ShellResult helperRes = runShellSync(helperCmd);
                     DiagLog.log("Helper", "exit=" + helperRes.exitCode + "\n" + helperRes.output);
                     if (helperRes.ok && helperRes.output.contains("OK:")) {
+                        RearGuardService.notifyFreshProjection();
                         postCallback(cb, true, "已成功投送到妙享背屏 (displayId=" + displayId + ")，翻到背面看看吧！");
                         return;
                     }
@@ -502,58 +504,99 @@ public final class ShizukuBridge {
      */
     public static void startRearKeepAlive(Context ctx, int displayId) {
         final Context app = ctx.getApplicationContext();
-        DAEMON_EXEC.execute(() -> {
-            stopRearKeepAliveInternal();
-            if (!isBinderAlive()) requestBinderFromManager(app);
-            IShizukuService s = service;
-            if (s == null || !isBinderAlive() || !isPermissionGranted()) {
-                DiagLog.log("KeepAlive", "Shizuku 未就绪，跳过背屏常亮锁");
-                return;
-            }
-            try {
-                String apkPath = app.getApplicationInfo().sourceDir;
-                String[] cmd = new String[]{
-                        "sh", "-c",
-                        "CLASSPATH=\"$1\" exec /system/bin/app_process /system/bin com.mirearpet.offline.RearShellHelper keepalive \"$2\" \"$3\"",
-                        "_",
-                        apkPath,
-                        app.getPackageName(),
-                        String.valueOf(displayId)
-                };
-                IRemoteProcess proc = s.newProcess(cmd, null, null);
-                if (proc == null) return;
-                keepAliveProc = proc;
-                ParcelFileDescriptor outFd = proc.getOutputStream();
-                if (outFd != null) {
-                    keepAliveStdin = new ParcelFileDescriptor.AutoCloseOutputStream(outFd);
-                }
-                ParcelFileDescriptor inFd = proc.getInputStream();
-                if (inFd != null) {
-                    new Thread(() -> {
-                        try (BufferedReader br = new BufferedReader(new InputStreamReader(new ParcelFileDescriptor.AutoCloseInputStream(inFd)))) {
-                            String line;
-                            while ((line = br.readLine()) != null) {
-                                DiagLog.log("KeepAlive", line);
+        DAEMON_EXEC.execute(() -> startRearKeepAliveInternal(app, displayId));
+    }
+
+    private static void startRearKeepAliveInternal(Context app, int displayId) {
+        stopRearKeepAliveInternal();
+        if (app == null) return;
+        if (!isBinderAlive()) requestBinderFromManager(app);
+        IShizukuService s = service;
+        if (s == null || !isBinderAlive() || !isPermissionGranted()) {
+            DiagLog.log("KeepAlive", "Shizuku 未就绪，跳过背屏常亮锁");
+            return;
+        }
+        try {
+            String apkPath = app.getApplicationInfo().sourceDir;
+            String[] cmd = new String[]{
+                    "sh", "-c",
+                    "CLASSPATH=\"$1\" exec /system/bin/app_process /system/bin com.mirearpet.offline.RearShellHelper keepalive \"$2\" \"$3\"",
+                    "_",
+                    apkPath,
+                    app.getPackageName(),
+                    String.valueOf(displayId)
+            };
+            final IRemoteProcess proc = s.newProcess(cmd, null, null);
+            if (proc == null) return;
+            keepAliveProc = proc;
+            ParcelFileDescriptor outFd = proc.getOutputStream();
+            final java.io.OutputStream stdinStream = outFd != null
+                    ? new ParcelFileDescriptor.AutoCloseOutputStream(outFd)
+                    : null;
+            keepAliveStdin = stdinStream;
+            ParcelFileDescriptor inFd = proc.getInputStream();
+            if (inFd != null) {
+                new Thread(() -> {
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(new ParcelFileDescriptor.AutoCloseInputStream(inFd)))) {
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            DiagLog.log("KeepAlive", line);
+                        }
+                    } catch (Throwable ignored) {
+                    } finally {
+                        // Clear stale pipe references if daemon process exits unexpectedly
+                        if (keepAliveProc == proc) {
+                            keepAliveProc = null;
+                            if (keepAliveStdin == stdinStream) {
+                                keepAliveStdin = null;
                             }
-                        } catch (Throwable ignored) {}
-                    }, "KeepAliveReader").start();
-                }
-                DiagLog.log("KeepAlive", "已启动背屏常亮守护进程 (displayId=" + displayId + ")");
-            } catch (Throwable t) {
-                DiagLog.log("KeepAlive", "启动失败: " + t.getMessage());
+                            DiagLog.log("KeepAlive", "背屏常亮守护进程已退出");
+                        }
+                    }
+                }, "KeepAliveReader").start();
             }
-        });
+            DiagLog.log("KeepAlive", "已启动背屏常亮守护进程 (displayId=" + displayId + ")");
+        } catch (Throwable t) {
+            DiagLog.log("KeepAlive", "启动失败: " + t.getMessage());
+        }
     }
 
     public static void sendKeepAliveCommand(String cmd) {
         DAEMON_EXEC.execute(() -> {
             java.io.OutputStream os = keepAliveStdin;
-            if (os == null) return;
+            if (os == null) {
+                // Self-heal if Guard Service is active and the daemon exited unexpectedly
+                if (RearGuardService.isRunning && !"quit".equals(cmd)) {
+                    long now = System.currentTimeMillis();
+                    if ((now - lastKeepAliveRespawnAt) >= 3000L && appContext != null) {
+                        lastKeepAliveRespawnAt = now;
+                        DiagLog.log("KeepAlive", "检测到守护进程断开，自动拉起并重发指令(" + cmd + ")");
+                        startRearKeepAliveInternal(appContext, RearGuardService.getGuardDisplayId());
+                        os = keepAliveStdin;
+                    }
+                }
+                if (os == null) return;
+            }
             try {
                 os.write((cmd + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 os.flush();
             } catch (Throwable t) {
                 DiagLog.log("KeepAlive", "发送指令失败(" + cmd + "): " + t.getMessage());
+                stopRearKeepAliveInternal();
+                if (RearGuardService.isRunning && !"quit".equals(cmd) && appContext != null) {
+                    long now = System.currentTimeMillis();
+                    if ((now - lastKeepAliveRespawnAt) >= 3000L) {
+                        lastKeepAliveRespawnAt = now;
+                        startRearKeepAliveInternal(appContext, RearGuardService.getGuardDisplayId());
+                        java.io.OutputStream retryOs = keepAliveStdin;
+                        if (retryOs != null) {
+                            try {
+                                retryOs.write((cmd + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                                retryOs.flush();
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                }
             }
         });
     }

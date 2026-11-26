@@ -76,6 +76,26 @@ public class RearGuardService extends Service {
         }
     }
 
+    public static void notifyFreshProjection() {
+        RearGuardService svc = activeInstance;
+        if (svc != null && isRunning) {
+            svc.handler.post(() -> {
+                svc.faceDownSinceMs = 0L;
+                if (svc.ecoSleeping) {
+                    svc.ecoSleeping = false;
+                    RearPetActivity.setEcoBlackIfRunning(false);
+                    svc.syncKeepAliveLock();
+                }
+                svc.scheduleCheckLoop(2500);
+            });
+        }
+    }
+
+    public static int getGuardDisplayId() {
+        RearGuardService svc = activeInstance;
+        return svc != null ? svc.guardDisplayId : 1;
+    }
+
     private void syncKeepAliveLock() {
         boolean shouldPause = cameraGuardPaused || !activeCameraIds.isEmpty() || ecoSleeping;
         if (shouldPause == keepAliveLockPaused) return;

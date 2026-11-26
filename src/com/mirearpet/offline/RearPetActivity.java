@@ -357,10 +357,18 @@ public class RearPetActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                DiagLog.log("Web", "onPageFinished d=" + currentDisplayId()
+                int dId = currentDisplayId();
+                DiagLog.log("Web", "onPageFinished d=" + dId
                         + " view=" + view.getWidth() + "x" + view.getHeight());
                 if (url != null && !url.startsWith("about:")) {
                     statusOverlay.setVisibility(View.GONE);
+                    if (!isFrontFullscreenMode() && dId != 0) {
+                        if (currentEcoBlack) {
+                            view.evaluateJavascript("window.setPetEcoBlack && window.setPetEcoBlack(true);", null);
+                        } else if (!ShizukuBridge.isDisplayAwake(RearPetActivity.this, dId)) {
+                            view.evaluateJavascript("window.setPetSuspended && window.setPetSuspended(true);", null);
+                        }
+                    }
                 }
             }
 
