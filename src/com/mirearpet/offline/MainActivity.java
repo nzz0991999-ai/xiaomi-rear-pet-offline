@@ -449,6 +449,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         ecoFaceDownSwitch.setOnCheckedChangeListener((btn, checked) -> {
             if (syncingSwitches) return;
             prefs.edit().putBoolean("eco_facedown", checked).apply();
+            RearPetActivity.setEcoFaceDownEnabled(checked);
             if (RearGuardService.isRunning) {
                 Intent cfgIntent = new Intent(this, RearGuardService.class);
                 cfgIntent.setAction(RearGuardService.ACTION_UPDATE_CONFIG);
@@ -461,7 +462,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         card2.addView(ecoRow);
 
         TextView ecoHint = new TextView(this);
-        ecoHint.setText("正面朝上平放桌面 6 秒后背屏纯黑休眠，拿起或翻转立即亮回（守护模式下生效）");
+        ecoHint.setText("正面朝上平放桌面 5 秒后背屏纯黑休眠，拿起或翻转立即亮回");
         ecoHint.setTextColor(Color.parseColor("#7D95AD"));
         ecoHint.setTextSize(11f);
         ecoHint.setLineSpacing(dp(2), 1f);
@@ -518,7 +519,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         dbrLp.bottomMargin = dp(8);
         diagBtnRow.setLayoutParams(dbrLp);
 
-        Button copyLogBtn = makeButton("复制精简日志", Color.parseColor("#0D3B4C"), Color.parseColor("#8CF6FF"), Color.parseColor("#34E8FF"));
+        Button copyLogBtn = makeButton("复制日志", Color.parseColor("#0D3B4C"), Color.parseColor("#8CF6FF"), Color.parseColor("#34E8FF"));
         copyLogBtn.setTextSize(12f);
         LinearLayout.LayoutParams clLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f);
         clLp.rightMargin = dp(6);
@@ -675,7 +676,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
                         + " d" + did + "=" + ShizukuBridge.getDisplayState(this, did);
                 String compact = DiagLog.getCompactSummary(header, 420);
                 cm.setPrimaryClip(ClipData.newPlainText("MiRearPetOffline_DiagLog", compact));
-                showToast("已复制精简日志(" + compact.length() + "字)，可直接发抖音/微信");
+                showToast("已复制日志(" + compact.length() + "字)");
             }
         } catch (Throwable t) {
             showToast("复制失败: " + t.getMessage());

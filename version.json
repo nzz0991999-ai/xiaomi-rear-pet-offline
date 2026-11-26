@@ -1,6 +1,6 @@
 {
-  "version_code": 6,
-  "version_name": "1.0.5",
+  "version_code": 7,
+  "version_name": "1.0.6",
   "apk_url": "https://github.com/nzz0991999-ai/xiaomi-rear-pet-offline/releases/latest/download/MiRearPet_Offline.apk",
-  "notes": "修复小米 17 Pro / 17 Pro Max 实机投屏后背屏空白问题（适配 LTPO 副屏状态与首次绘制保护）；修复 am start 参数报错与主屏退后台等待时序让一键投屏一次成功；精简诊断日志至 420 字以内适配抖音单条发送；优化通知栏文案并清理无效手势提示。"
+  "notes": "彻底修复「背面贴桌自动黑屏休眠」不触发问题：改用连续硬件加速度计 + 显式 5 秒定时器并下沉至背屏窗口内，无论是否开启守护模式，正面朝上平放 5 秒均可靠进入纯黑休眠，拿起瞬间亮回；日志按钮名称恢复为简洁的「复制日志」。"
 }

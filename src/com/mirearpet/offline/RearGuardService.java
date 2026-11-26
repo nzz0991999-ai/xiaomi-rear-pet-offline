@@ -10,17 +10,12 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
 import android.hardware.camera2.CameraManager;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.SystemClock;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -28,9 +23,8 @@ import java.util.Set;
 /**
  * Lightweight, event-driven foreground guard service for Offline Rear Screen Pet.
  * - Recovers Xiaomi default rear theme immediately even while front screen is locked.
- * - Stops polling completely when Display 1 is OFF (0% idle wakeups).
- * - Optional hardware-batched back-face-down eco sleep (phone lying screen-up on desk >= 6s):
- *   blanks OLED to pure #000000 and releases Display-1 wakelock, then wakes & refronts instantly on lift.
+ * - Stops polling completely when Display 1 is OFF or in back-face-down eco sleep.
+ * - Coordinates Shizuku Display-1 wakelock release/resume with RearPetActivity's accelerometer eco sleep.
  */
 public class RearGuardService extends Service {
     public static final String ACTION_START = "com.mirearpet.offline.GUARD_START";
@@ -42,14 +36,10 @@ public class RearGuardService extends Service {
 
     private static final String CHANNEL_ID = "mi_rear_pet_offline_guard";
     private static final int NOTIF_ID = 8766;
-    private static final long FACE_DOWN_SLEEP_DELAY_MS = 6000L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private DisplayManager displayManager;
     private CameraManager cameraManager;
-    private SensorManager sensorManager;
-    private Sensor gravitySensor;
-    private boolean sensorRegistered = false;
     private final Set<String> activeCameraIds = new HashSet<>();
     private volatile boolean cameraGuardPaused = false;
     private volatile boolean ecoFaceDownEnabled = true;
@@ -57,10 +47,14 @@ public class RearGuardService extends Service {
     private volatile boolean keepAliveLockPaused = false;
     private volatile boolean repinInFlight = false;
     private int guardDisplayId = 1;
-    private long faceDownSinceMs = 0L;
     private long lastRepinAt = 0L;
     private long lastQuickRefrontAt = 0L;
     private long nextAllowedRepinAt = 0L;
+
+    public static boolean isCameraBusy() {
+        RearGuardService svc = activeInstance;
+        return svc != null && (svc.cameraGuardPaused || !svc.activeCameraIds.isEmpty());
+    }
 
     public static void notifyRearPetLostTop() {
         RearGuardService svc = activeInstance;
@@ -69,10 +63,10 @@ public class RearGuardService extends Service {
         }
     }
 
-    public static void notifyUserTouchWake() {
+    public static void notifyEcoSleepState(boolean sleeping) {
         RearGuardService svc = activeInstance;
         if (svc != null && isRunning) {
-            svc.handler.post(() -> svc.exitEcoSleep("touch"));
+            svc.handler.post(() -> svc.handleEcoSleepStateChanged(sleeping));
         }
     }
 
@@ -80,10 +74,8 @@ public class RearGuardService extends Service {
         RearGuardService svc = activeInstance;
         if (svc != null && isRunning) {
             svc.handler.post(() -> {
-                svc.faceDownSinceMs = 0L;
                 if (svc.ecoSleeping) {
                     svc.ecoSleeping = false;
-                    RearPetActivity.setEcoBlackIfRunning(false);
                     svc.syncKeepAliveLock();
                 }
                 svc.scheduleCheckLoop(2500);
@@ -94,6 +86,39 @@ public class RearGuardService extends Service {
     public static int getGuardDisplayId() {
         RearGuardService svc = activeInstance;
         return svc != null ? svc.guardDisplayId : 1;
+    }
+
+    private void handleEcoSleepStateChanged(boolean sleeping) {
+        if (!isRunning || ecoSleeping == sleeping) return;
+        ecoSleeping = sleeping;
+        if (sleeping) {
+            handler.removeCallbacks(checkLoop);
+            handler.removeCallbacks(displayChangedRepinRunnable);
+            syncKeepAliveLock();
+        } else {
+            syncKeepAliveLock();
+            if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+            // Guaranteed instant wake & default-theme recovery even while front screen is locked!
+            if (RearPetActivity.hasRearInstance() && ShizukuBridge.isPermissionGranted()) {
+                handler.postDelayed(() -> {
+                    if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+                        ShizukuBridge.sendKeepAliveCommand("refront");
+                    }
+                }, 100);
+                handler.postDelayed(() -> {
+                    if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+                        ShizukuBridge.sendKeepAliveCommand("refront");
+                    }
+                }, 500);
+            } else {
+                handler.postDelayed(() -> {
+                    if (isRunning && !ecoSleeping) {
+                        maybeRepin(false);
+                    }
+                }, 500);
+            }
+            scheduleCheckLoop(1800);
+        }
     }
 
     private void syncKeepAliveLock() {
@@ -109,113 +134,6 @@ public class RearGuardService extends Service {
             handler.postDelayed(checkLoop, delayMs);
         }
     }
-
-    private void updateSensorRegistration() {
-        boolean want = isRunning && ecoFaceDownEnabled;
-        if (want == sensorRegistered) return;
-        if (sensorManager == null) {
-            sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-        }
-        if (sensorManager == null) return;
-        if (want) {
-            if (gravitySensor == null) {
-                gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
-                if (gravitySensor == null) {
-                    gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-                }
-            }
-            if (gravitySensor != null) {
-                try {
-                    // Hardware sensor-hub batched 2Hz sampling (~0.1mA, <=0.5s instant lift wake)
-                    sensorRegistered = sensorManager.registerListener(
-                            gravityListener, gravitySensor, 500_000, 500_000, handler);
-                } catch (Throwable t) {
-                    DiagLog.log("Guard", "注册重力传感器失败: " + t.getMessage());
-                }
-            }
-        } else {
-            try {
-                sensorManager.unregisterListener(gravityListener);
-            } catch (Throwable ignored) {}
-            sensorRegistered = false;
-            faceDownSinceMs = 0L;
-        }
-    }
-
-    private void enterEcoSleep() {
-        if (!isRunning || ecoSleeping || !ecoFaceDownEnabled) return;
-        if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
-        if (!RearPetActivity.hasRearInstance()) return;
-        ecoSleeping = true;
-        handler.removeCallbacks(checkLoop);
-        handler.removeCallbacks(displayChangedRepinRunnable);
-        DiagLog.log("Guard", "手机正面朝上平放桌面 6 秒，背屏进入纯黑省电休眠");
-        RearPetActivity.setEcoBlackIfRunning(true);
-        syncKeepAliveLock();
-    }
-
-    private void exitEcoSleep(String reason) {
-        faceDownSinceMs = 0L;
-        if (!ecoSleeping) return;
-        ecoSleeping = false;
-        DiagLog.log("Guard", "退出背屏省电休眠(" + reason + ")，立即恢复大眼睛");
-        RearPetActivity.setEcoBlackIfRunning(false);
-        syncKeepAliveLock();
-        if (!isRunning || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
-        // Guaranteed instant wake & default-theme recovery even while front screen is locked!
-        if (RearPetActivity.hasRearInstance() && ShizukuBridge.isPermissionGranted()) {
-            handler.postDelayed(() -> {
-                if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
-                    ShizukuBridge.sendKeepAliveCommand("refront");
-                }
-            }, 100);
-            handler.postDelayed(() -> {
-                if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
-                    ShizukuBridge.sendKeepAliveCommand("refront");
-                }
-            }, 500);
-        } else {
-            handler.postDelayed(() -> {
-                if (isRunning && !ecoSleeping) {
-                    maybeRepin(false);
-                }
-            }, 500);
-        }
-        scheduleCheckLoop(1800);
-    }
-
-    private final SensorEventListener gravityListener = new SensorEventListener() {
-        @Override
-        public void onSensorChanged(SensorEvent event) {
-            if (!isRunning || !ecoFaceDownEnabled || event == null || event.values == null || event.values.length < 3) {
-                return;
-            }
-            float x = event.values[0];
-            float y = event.values[1];
-            float z = event.values[2];
-            // Phone lying flat screen-up (back screen pressed against desk): z ≈ +9.8 m/s²
-            boolean isFlatBackDown = (z > 8.8f && Math.abs(x) < 2.2f && Math.abs(y) < 2.2f);
-            boolean isLiftedOrTilted = (z < 7.6f || Math.abs(x) > 3.2f || Math.abs(y) > 3.2f);
-
-            if (!ecoSleeping) {
-                if (isFlatBackDown && !cameraGuardPaused && activeCameraIds.isEmpty() && RearPetActivity.hasRearInstance()) {
-                    long now = SystemClock.uptimeMillis();
-                    if (faceDownSinceMs == 0L) {
-                        faceDownSinceMs = now;
-                    } else if ((now - faceDownSinceMs) >= FACE_DOWN_SLEEP_DELAY_MS) {
-                        enterEcoSleep();
-                    }
-                } else {
-                    faceDownSinceMs = 0L;
-                }
-            } else if (isLiftedOrTilted) {
-                exitEcoSleep("lifted");
-            }
-        }
-
-        @Override
-        public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-    };
 
     private void scheduleQuickRefrontAfterPause() {
         if (ecoSleeping) return;
@@ -233,7 +151,7 @@ public class RearGuardService extends Service {
         long now = System.currentTimeMillis();
         if ((now - lastQuickRefrontAt) < 450) return;
         lastQuickRefrontAt = now;
-        DiagLog.log("Guard", "背屏被切回系统主题(" + reason + ")，立即原位拉回桌宠（无需解锁主屏）");
+        DiagLog.log("Guard", "切回系统主题(" + reason + ")，原位拉回桌宠");
         ShizukuBridge.sendKeepAliveCommand("refront");
     }
 
@@ -242,8 +160,6 @@ public class RearGuardService extends Service {
         public void run() {
             if (!isRunning || ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
             if (!ShizukuBridge.isDisplayAwake(RearGuardService.this, guardDisplayId)) {
-                // Display 1 is OFF: stop polling completely (0% background wakeups).
-                // DisplayListener.onDisplayChanged(guardDisplayId) restarts checkLoop on wake.
                 return;
             }
             maybeRepin(false);
@@ -294,7 +210,7 @@ public class RearGuardService extends Service {
             handler.removeCallbacks(checkLoop);
             cameraGuardPaused = true;
             if (!wasActive) {
-                DiagLog.log("Guard", "检测到相机开启(id=" + cameraId + ")，暂停背屏守护并释放背屏常亮锁");
+                DiagLog.log("Guard", "相机开启(id=" + cameraId + ")，暂停守护");
                 syncKeepAliveLock();
             }
         }
@@ -399,9 +315,6 @@ public class RearGuardService extends Service {
             isRunning = false;
             ecoSleeping = false;
             keepAliveLockPaused = false;
-            faceDownSinceMs = 0L;
-            RearPetActivity.setEcoBlackIfRunning(false);
-            updateSensorRegistration();
             ShizukuBridge.stopRearKeepAlive();
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
@@ -413,10 +326,6 @@ public class RearGuardService extends Service {
         if (ACTION_UPDATE_CONFIG.equals(action)) {
             ecoFaceDownEnabled = intent != null ? intent.getBooleanExtra("eco_facedown", prefEco) : prefEco;
             if (!isRunning) return START_NOT_STICKY;
-            updateSensorRegistration();
-            if (!ecoFaceDownEnabled && ecoSleeping) {
-                exitEcoSleep("switch_off");
-            }
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm != null) {
                 nm.notify(NOTIF_ID, buildNotification());
@@ -436,7 +345,6 @@ public class RearGuardService extends Service {
         boolean wasRunning = isRunning;
         isRunning = true;
         ecoSleeping = false;
-        faceDownSinceMs = 0L;
         RearPetActivity.setEcoBlackIfRunning(false);
         startForeground(NOTIF_ID, buildNotification());
         if (!wasRunning || !ACTION_REPIN_NOW.equals(action)) {
@@ -444,7 +352,6 @@ public class RearGuardService extends Service {
             ShizukuBridge.startRearKeepAlive(this, guardDisplayId);
             syncKeepAliveLock();
         }
-        updateSensorRegistration();
 
         if (ACTION_REPIN_NOW.equals(action)) {
             maybeRepin(true);
@@ -462,9 +369,7 @@ public class RearGuardService extends Service {
         if (!force && !ShizukuBridge.isDisplayAwake(this, guardDisplayId)) return;
         if (!ShizukuBridge.isPermissionGranted()) return;
 
-        // Works EVEN WHILE THE FRONT SCREEN IS LOCKED:
-        // If RearPetActivity is still alive on Display 1 (just covered by Xiaomi's SubScreenLauncher after double-tap),
-        // instantly pull it back on top in-place via the persistent keepalive daemon — NO front-screen unlock needed!
+        // Works EVEN WHILE THE FRONT SCREEN IS LOCKED
         KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
         boolean keyguardLocked = (km != null && km.isKeyguardLocked());
         if (keyguardLocked) {
@@ -474,7 +379,6 @@ public class RearGuardService extends Service {
             return;
         }
 
-        // Unlocked fast path: prefer instant in-place refront first if instance is already on Display 1
         if (!force && RearPetActivity.hasRearInstance() && RearPetActivity.activeDisplayId == guardDisplayId) {
             tryQuickRefrontIfRearAwake("unlocked_fast");
         }
@@ -536,9 +440,6 @@ public class RearGuardService extends Service {
         isRunning = false;
         ecoSleeping = false;
         keepAliveLockPaused = false;
-        faceDownSinceMs = 0L;
-        RearPetActivity.setEcoBlackIfRunning(false);
-        updateSensorRegistration();
         ShizukuBridge.stopRearKeepAlive();
         handler.removeCallbacksAndMessages(null);
         if (cameraManager != null) {

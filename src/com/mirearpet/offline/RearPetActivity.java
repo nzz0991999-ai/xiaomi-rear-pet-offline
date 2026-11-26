@@ -5,11 +5,16 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
@@ -46,13 +51,56 @@ public class RearPetActivity extends Activity {
     private WebView webView;
     private TextView statusOverlay;
     private DisplayManager displayManager;
+    private SensorManager sensorManager;
+    private Sensor accelSensor;
+    private boolean ecoSensorRegistered = false;
+    private boolean ecoFaceDownEnabled = true;
+    private boolean faceDownTimerPending = false;
+    private float lastSensorZ = 0f;
     private int webViewCreatedDisplayId = -1;
     private boolean createdOnDisplay0 = false;
     private boolean hasEverBeenOnRearDisplay = false;
     private boolean stoppedOnDisplay0 = false;
     private volatile boolean currentEcoBlack = false;
     private boolean lastJsSuspended = false;
+    private static final long FACE_DOWN_SLEEP_DELAY_MS = 5000L;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable faceDownSleepRunnable = () -> {
+        faceDownTimerPending = false;
+        enterEcoSleep();
+    };
+    private final SensorEventListener ecoAccelListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            if (isFrontFullscreenMode() || !hasEverBeenOnRearDisplay || !ecoFaceDownEnabled || isFinishing()) return;
+            if (event == null || event.values == null || event.values.length < 3) return;
+            float x = event.values[0];
+            float y = event.values[1];
+            float z = event.values[2];
+            lastSensorZ = z;
+            // Phone lying flat screen-up (back screen pressed against desk, allowing up to ~21° camera bump / case tilt)
+            boolean isFlatBackDown = (z > 8.2f && Math.abs(x) < 3.6f && Math.abs(y) < 3.6f);
+            boolean isLiftedOrTilted = (z < 7.0f || Math.abs(x) > 4.6f || Math.abs(y) > 4.6f);
+
+            if (!currentEcoBlack) {
+                if (isFlatBackDown && !RearGuardService.isCameraBusy()) {
+                    if (!faceDownTimerPending) {
+                        faceDownTimerPending = true;
+                        handler.removeCallbacks(faceDownSleepRunnable);
+                        handler.postDelayed(faceDownSleepRunnable, FACE_DOWN_SLEEP_DELAY_MS);
+                    }
+                } else if (faceDownTimerPending) {
+                    faceDownTimerPending = false;
+                    handler.removeCallbacks(faceDownSleepRunnable);
+                }
+            } else if (isLiftedOrTilted) {
+                exitEcoSleep("lifted");
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    };
     private final DisplayManager.DisplayListener rearDisplayListener = new DisplayManager.DisplayListener() {
         @Override
         public void onDisplayAdded(int displayId) {}
@@ -138,26 +186,103 @@ public class RearPetActivity extends Activity {
         }
     }
 
+    public static void setEcoFaceDownEnabled(boolean enabled) {
+        RearPetActivity act = rearInstanceRef.get();
+        if (act != null && !act.isFinishing() && !act.isDestroyed()) {
+            act.runOnUiThread(() -> {
+                act.ecoFaceDownEnabled = enabled;
+                act.updateEcoSensorRegistration();
+                if (!enabled && act.currentEcoBlack) {
+                    act.exitEcoSleep("switch_off");
+                }
+            });
+        }
+    }
+
     public static void setEcoBlackIfRunning(boolean ecoBlack) {
         RearPetActivity act = rearInstanceRef.get();
         if (act != null && !act.isFinishing() && !act.isDestroyed()) {
-            act.currentEcoBlack = ecoBlack;
             act.runOnUiThread(() -> {
-                if (!act.isFrontFullscreenMode() && act.currentDisplayId() != 0) {
-                    if (ecoBlack) {
-                        act.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    } else {
-                        act.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    }
-                }
-                if (act.webView != null) {
-                    String js = "window.setPetEcoBlack && window.setPetEcoBlack(" + ecoBlack + ");";
-                    if (!ecoBlack) {
-                        js += "window.setPetSuspended && window.setPetSuspended(false);";
-                    }
-                    act.webView.evaluateJavascript(js, null);
+                if (ecoBlack) {
+                    act.enterEcoSleep();
+                } else {
+                    act.exitEcoSleep("external");
                 }
             });
+        }
+    }
+
+    private void updateEcoSensorRegistration() {
+        if (isFrontFullscreenMode()) return;
+        boolean want = hasEverBeenOnRearDisplay && ecoFaceDownEnabled && !isFinishing();
+        if (want == ecoSensorRegistered) return;
+        if (sensorManager == null) {
+            sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        }
+        if (sensorManager == null) return;
+        if (want) {
+            if (accelSensor == null) {
+                accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            }
+            if (accelSensor != null) {
+                try {
+                    ecoSensorRegistered = sensorManager.registerListener(
+                            ecoAccelListener, accelSensor, SensorManager.SENSOR_DELAY_NORMAL, handler);
+                    DiagLog.log("Pet", "贴桌传感器就绪: " + ecoSensorRegistered);
+                } catch (Throwable t) {
+                    DiagLog.log("Pet", "注册贴桌传感器失败: " + t.getMessage());
+                }
+            }
+        } else {
+            faceDownTimerPending = false;
+            handler.removeCallbacks(faceDownSleepRunnable);
+            try {
+                sensorManager.unregisterListener(ecoAccelListener);
+            } catch (Throwable ignored) {}
+            ecoSensorRegistered = false;
+        }
+    }
+
+    private void enterEcoSleep() {
+        if (isFrontFullscreenMode() || !hasEverBeenOnRearDisplay || currentEcoBlack || isFinishing()) return;
+        if (RearGuardService.isCameraBusy()) return;
+        currentEcoBlack = true;
+        faceDownTimerPending = false;
+        handler.removeCallbacks(faceDownSleepRunnable);
+        DiagLog.log("Pet", String.format(java.util.Locale.US, "贴桌休眠(z=%.1f)", lastSensorZ));
+        if (currentDisplayId() != 0) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        if (webView != null) {
+            webView.evaluateJavascript("window.setPetEcoBlack && window.setPetEcoBlack(true);", null);
+        }
+        RearGuardService.notifyEcoSleepState(true);
+    }
+
+    private void exitEcoSleep(String reason) {
+        faceDownTimerPending = false;
+        handler.removeCallbacks(faceDownSleepRunnable);
+        if (!currentEcoBlack) return;
+        currentEcoBlack = false;
+        DiagLog.log("Pet", String.format(java.util.Locale.US, "退出休眠(%s,z=%.1f)", reason, lastSensorZ));
+        int dId = currentDisplayId();
+        if (!isFrontFullscreenMode() && dId != 0) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        if (webView != null) {
+            lastJsSuspended = false;
+            webView.evaluateJavascript(
+                    "window.setPetEcoBlack && window.setPetEcoBlack(false);"
+                            + "window.setPetSuspended && window.setPetSuspended(false);",
+                    null
+            );
+        }
+        if (RearGuardService.isRunning) {
+            RearGuardService.notifyEcoSleepState(false);
+        } else if (!isFrontFullscreenMode() && dId != 0
+                && ShizukuBridge.getDisplayState(this, dId) == Display.STATE_OFF
+                && ShizukuBridge.isPermissionGranted()) {
+            ShizukuBridge.wakeRearDisplayOnly(this, dId);
         }
     }
 
@@ -197,13 +322,7 @@ public class RearPetActivity extends Activity {
 
         @JavascriptInterface
         public void onUserTouchWake() {
-            currentEcoBlack = false;
-            runOnUiThread(() -> {
-                if (!isFrontFullscreenMode() && currentDisplayId() != 0) {
-                    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                }
-            });
-            RearGuardService.notifyUserTouchWake();
+            runOnUiThread(() -> exitEcoSleep("touch"));
         }
     }
 
@@ -213,6 +332,7 @@ public class RearPetActivity extends Activity {
         if (!isFrontFullscreenMode()) {
             rearInstanceRef = new WeakReference<>(this);
             createdOnDisplay0 = (currentDisplayId() == 0);
+            ecoFaceDownEnabled = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("eco_facedown", true);
             displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
             if (displayManager != null) {
                 displayManager.registerDisplayListener(rearDisplayListener, handler);
@@ -330,6 +450,7 @@ public class RearPetActivity extends Activity {
                 return;
             }
             hasEverBeenOnRearDisplay = true;
+            updateEcoSensorRegistration();
         }
         if (webView != null && webViewCreatedDisplayId == dId) {
             return;
@@ -498,6 +619,15 @@ public class RearPetActivity extends Activity {
         logLifecycle("onDestroy");
         handler.removeCallbacks(autoHideOnDisplay0Runnable);
         handler.removeCallbacks(frontStuckWatchdog);
+        handler.removeCallbacks(faceDownSleepRunnable);
+        if (sensorManager != null && ecoSensorRegistered) {
+            try { sensorManager.unregisterListener(ecoAccelListener); } catch (Throwable ignored) {}
+            ecoSensorRegistered = false;
+        }
+        if (currentEcoBlack) {
+            currentEcoBlack = false;
+            RearGuardService.notifyEcoSleepState(false);
+        }
         if (displayManager != null) {
             try { displayManager.unregisterDisplayListener(rearDisplayListener); } catch (Throwable ignored) {}
             displayManager = null;
