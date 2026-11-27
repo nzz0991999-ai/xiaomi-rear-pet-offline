@@ -92,37 +92,39 @@ public class RearGuardService extends Service {
         if (!isRunning || ecoSleeping == sleeping) return;
         ecoSleeping = sleeping;
         if (sleeping) {
+            // Pause periodic polling while pure-black eco sleeping, but KEEP Display-1 wakelock active
+            // so HyperOS never times out Display 1 back to Xiaomi's default SubScreenLauncher wallpaper!
             handler.removeCallbacks(checkLoop);
-            handler.removeCallbacks(displayChangedRepinRunnable);
-            syncKeepAliveLock();
         } else {
-            syncKeepAliveLock();
             if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
-            // Guaranteed instant wake & default-theme recovery even while front screen is locked!
+            // Guaranteed instant wake & default-theme recovery if anything took top while on desk
             if (RearPetActivity.hasRearInstance() && ShizukuBridge.isPermissionGranted()) {
-                handler.postDelayed(() -> {
-                    if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
-                        ShizukuBridge.sendKeepAliveCommand("refront");
-                    }
-                }, 100);
-                handler.postDelayed(() -> {
-                    if (isRunning && !ecoSleeping && !cameraGuardPaused && activeCameraIds.isEmpty()) {
-                        ShizukuBridge.sendKeepAliveCommand("refront");
-                    }
-                }, 500);
+                if (!RearPetActivity.isVisible || !ShizukuBridge.isDisplayAwake(this, guardDisplayId)) {
+                    handler.postDelayed(() -> {
+                        if (isRunning && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+                            ShizukuBridge.sendKeepAliveCommand("refront");
+                        }
+                    }, 80);
+                    handler.postDelayed(() -> {
+                        if (isRunning && !cameraGuardPaused && activeCameraIds.isEmpty()) {
+                            ShizukuBridge.sendKeepAliveCommand("refront");
+                        }
+                    }, 480);
+                }
             } else {
                 handler.postDelayed(() -> {
-                    if (isRunning && !ecoSleeping) {
+                    if (isRunning) {
                         maybeRepin(false);
                     }
-                }, 500);
+                }, 400);
             }
             scheduleCheckLoop(1800);
         }
     }
 
     private void syncKeepAliveLock() {
-        boolean shouldPause = cameraGuardPaused || !activeCameraIds.isEmpty() || ecoSleeping;
+        // ONLY release Display-1 wakelock for Camera; NEVER release for eco-sleep so HyperOS never kicks us off Display 1!
+        boolean shouldPause = cameraGuardPaused || !activeCameraIds.isEmpty();
         if (shouldPause == keepAliveLockPaused) return;
         keepAliveLockPaused = shouldPause;
         ShizukuBridge.sendKeepAliveCommand(shouldPause ? "pause_lock" : "resume_lock");
@@ -136,13 +138,12 @@ public class RearGuardService extends Service {
     }
 
     private void scheduleQuickRefrontAfterPause() {
-        if (ecoSleeping) return;
         handler.postDelayed(() -> tryQuickRefrontIfRearAwake("pet_paused_220ms"), 220);
         handler.postDelayed(() -> tryQuickRefrontIfRearAwake("pet_paused_620ms"), 620);
     }
 
     private void tryQuickRefrontIfRearAwake(String reason) {
-        if (!isRunning || ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        if (!isRunning || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
         if (ShizukuBridge.isProjectionInFlight()) return;
         if (RearPetActivity.isVisible && RearPetActivity.activeDisplayId == guardDisplayId) return;
         if (!RearPetActivity.hasRearInstance()) return;
@@ -171,7 +172,7 @@ public class RearGuardService extends Service {
     };
 
     private final Runnable displayChangedRepinRunnable = () -> {
-        if (!isRunning || ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        if (!isRunning || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
         maybeRepin(false);
     };
 
@@ -241,11 +242,13 @@ public class RearGuardService extends Service {
         @Override
         public void onDisplayChanged(int displayId) {
             if (displayId != guardDisplayId) return;
-            if (ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+            if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
             if (ShizukuBridge.isDisplayAwake(RearGuardService.this, guardDisplayId)) {
                 handler.removeCallbacks(displayChangedRepinRunnable);
                 handler.postDelayed(displayChangedRepinRunnable, 220);
-                scheduleCheckLoop(1500);
+                if (!ecoSleeping) {
+                    scheduleCheckLoop(1500);
+                }
             } else {
                 handler.removeCallbacks(displayChangedRepinRunnable);
                 handler.removeCallbacks(checkLoop);
@@ -363,7 +366,7 @@ public class RearGuardService extends Service {
     }
 
     private void maybeRepin(boolean force) {
-        if (ecoSleeping || cameraGuardPaused || !activeCameraIds.isEmpty()) return;
+        if (cameraGuardPaused || !activeCameraIds.isEmpty()) return;
         if (repinInFlight || ShizukuBridge.isProjectionInFlight()) return;
         if (!force && RearPetActivity.isVisible && RearPetActivity.activeDisplayId == guardDisplayId) return;
         if (!force && !ShizukuBridge.isDisplayAwake(this, guardDisplayId)) return;

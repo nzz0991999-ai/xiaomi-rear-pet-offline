@@ -80,8 +80,8 @@ public class RearPetActivity extends Activity {
             float z = event.values[2];
             lastSensorZ = z;
             // Phone lying flat screen-up (back screen pressed against desk, allowing up to ~21° camera bump / case tilt)
-            boolean isFlatBackDown = (z > 8.2f && Math.abs(x) < 3.6f && Math.abs(y) < 3.6f);
-            boolean isLiftedOrTilted = (z < 7.0f || Math.abs(x) > 4.6f || Math.abs(y) > 4.6f);
+            boolean isFlatBackDown = (z > 8.4f && Math.abs(x) < 3.4f && Math.abs(y) < 3.4f);
+            boolean isLiftedOrTilted = (z < 7.8f || Math.abs(x) > 3.8f || Math.abs(y) > 3.8f);
 
             if (!currentEcoBlack) {
                 if (isFlatBackDown && !RearGuardService.isCameraBusy()) {
@@ -251,7 +251,9 @@ public class RearPetActivity extends Activity {
         faceDownTimerPending = false;
         handler.removeCallbacks(faceDownSleepRunnable);
         DiagLog.log("Pet", String.format(java.util.Locale.US, "贴桌休眠(z=%.1f)", lastSensorZ));
-        if (currentDisplayId() != 0) {
+        // Keep Display-1 wakelock / window pinned when Guard Mode is ON so HyperOS NEVER times out
+        // Display 1 back to Xiaomi's default wallpaper! Pure #000000 AMOLED + halted JS loop = 0mW OLED & 0% GPU.
+        if (!RearGuardService.isRunning && currentDisplayId() != 0) {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
         if (webView != null) {

@@ -272,6 +272,8 @@ public final class RearShellHelper {
                         TaskInfo rearTask = findTask(atm, getRoots, pkg, "RearPetActivity");
                         if (rearTask != null && rearTask.displayId == displayId && !rearTask.visible) {
                             System.out.println("LOG:lock_refront bringing root=" + rearTask.rootId + " back on top of d=" + displayId);
+                            wakeDisplay(displayId);
+                            try { Thread.sleep(80); } catch (InterruptedException ignored) {}
                             tryMoveTaskToFront(rearTask.rootId);
                             try {
                                 moveRoot.invoke(atm, rearTask.rootId, displayId);

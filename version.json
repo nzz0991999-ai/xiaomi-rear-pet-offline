@@ -1,6 +1,6 @@
 {
-  "version_code": 10,
-  "version_name": "1.0.9",
+  "version_code": 11,
+  "version_name": "1.0.10",
   "apk_url": "https://github.com/nzz0991999-ai/xiaomi-rear-pet-offline/releases/latest/download/MiRearPet_Offline.apk",
-  "notes": "底层自动对齐小米官方背屏正方向：投屏前自动采集小米自带背屏桌面的基准旋转角，抵达背屏后自动比对并锁正（全自动通杀 90° 横倒与 180° 上下颠倒，零手动设置，适配小米 17 Pro / 17 Pro Max 及 Android 16/17）。"
+  "notes": "修复守护模式下手机正面朝上平放桌面再拿起后退回小米默认壁纸的问题：贴桌休眠改为 AMOLED 纯黑零绘制且保持背屏占位不断锁，拿起 0.2 秒无缝亮回大眼睛，绝不切回系统默认壁纸。"
 }
