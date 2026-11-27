@@ -97,26 +97,60 @@ public final class DiagLog {
     private static String compactLine(String raw) {
         if (raw == null) return "";
         String s = raw.trim();
-        // Skip bulky verbose dumps in compact chat summary (still visible in UI log)
+        // Skip noisy routine/redundant lines so critical events fit in <=280 chars for Douyin chat
         if (s.contains("LOG:roots_before") || s.contains("LOG:roots_after")
-                || s.contains("LOG:start mode=") || s.contains("LOG:am_start_pet=")) {
+                || s.contains("LOG:start mode=") || s.contains("LOG:am_start_pet=")
+                || s.contains("LOG:bring_main=Starting:") || s.contains("LOG:wait_hidden CONFIRMED")
+                || s.contains("LOG:withdraw_target") || s.contains("LOG:removeTask(")
+                || s.contains("withdraw exit=0") || s.contains("auto-withdraw exit=0")
+                || s.contains("onStop(d=0) 已完成") || s.contains("主屏暂存自动退后台")
+                || s.contains("贴桌传感器就绪: true") || s.contains("launchOnRearDisplay start")
+                || s.contains("检测到已有背屏实例") || s.contains("RearPetActivity.onStart ")
+                || s.contains("RearPetActivity.onCreate ")) {
             return "";
         }
-        // Shorten [HH:mm:ss.SSS] -> HH:mm:ss
-        s = s.replaceFirst("^\\[(\\d{2}:\\d{2}:\\d{2})\\.\\d{3}\\]\\s*", "$1 ");
+        // Extract mm:ss only (saves 7 chars per line) and drop verbose [Tag]
+        String ts = "";
+        if (s.length() >= 10 && s.charAt(0) == '[' && s.charAt(9) == '.') {
+            ts = s.substring(4, 9) + " ";
+            s = s.replaceFirst("^\\[[^\\]]+\\]\\s*", "");
+        }
+        s = s.replaceFirst("^\\[(PetAct|Helper|Web|Guard|Pet|Bridge|KeepAlive)\\]\\s*", "");
+        // Compact common lifecycle & status messages
         s = s.replace("com.mirearpet.offline/.", ".")
                 .replace("com.mirearpet.offline", "pkg")
                 .replace("com.xiaomi.subscreencenter/.SubScreenLauncher", "SubScr")
                 .replace("android.hardware.input.InputManagerGlobal", "IM")
+                .replace("RearPetActivity.onConfigChanged ", "cfg ")
+                .replace("RearPetActivity.onResume ", "res ")
+                .replace("RearPetActivity.onPause ", "pau ")
+                .replace("RearPetActivity.onStop ", "stp ")
+                .replace("RearPetActivity.onDestroy ", "dst ")
                 .replace("RearPetActivity.", "Pet.")
-                .replace("displayId=", "d=")
-                .replace("主屏暂存自动退后台 moveTaskToBack(true)，加速释放主屏图层", "d0退后台")
-                .replace("onStop(d=0) 已完成，主屏图层已解绑", "onStop(d0)完成")
-                .replace("在 d=1 原生创建离线 WebView", "创建WebView(d1)");
-        if (s.length() > 74) {
-            s = s.substring(0, 71) + "...";
+                .replace("displayId=", "d")
+                .replace(" size=", " ")
+                .replaceAll(" dpi=\\d+", "")
+                .replaceAll(" taskId=\\d+", "")
+                .replace("在 d1 原生创建离线 WebView", "mkWeb d1")
+                .replace("onPageFinished ", "web ")
+                .replace(" view=", " ")
+                .replace("LOG:wakeDisplay(1) via IM ok=true", "wk1=ok")
+                .replace("LOG:rear_wakelock=", "wl=")
+                .replace("OK:moved:", "mvOK:")
+                .replace("OK:withdrawn:", "wdOK:")
+                .replace("OK:guard_rebuilt:", "grdOK:")
+                .replace("背屏竖屏(", "rot(")
+                .replace(")，请求横屏", ")")
+                .replace("贴桌休眠(", "slp(")
+                .replace("退出休眠(", "wk(")
+                .replace("安全熔断：抵达背屏 ", "ABORT:")
+                .replace("背屏实例被拉回主屏(", "EX_D0(")
+                .replace("，立即自毁", "");
+        String line = ts + s.trim();
+        if (line.length() > 48) {
+            line = line.substring(0, 45) + "...";
         }
-        return s;
+        return line;
     }
 
     public static String getTailText(int maxLines) {

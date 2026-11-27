@@ -56,8 +56,16 @@
       bottom: auto;
       width: 100vh;
       height: 100vw;
+      max-width: none !important;
+      max-height: none !important;
       transform: translate(-50%, -50%) rotate(-90deg);
       transform-origin: center center;
+    }
+
+    body.rear-portrait-fix .device-frame {
+      width: 100% !important;
+      height: 100% !important;
+      aspect-ratio: auto !important;
     }
 
     body:not(.preview-mode) .device-frame {

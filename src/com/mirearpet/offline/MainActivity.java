@@ -674,7 +674,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
                         + " Shz=" + (ShizukuBridge.isPermissionGranted() ? "OK" : (ShizukuBridge.isBinderAlive() ? "NO_PERM" : "OFF"))
                         + " Grd=" + (RearGuardService.isRunning ? "ON" : "OFF")
                         + " d" + did + "=" + ShizukuBridge.getDisplayState(this, did);
-                String compact = DiagLog.getCompactSummary(header, 420);
+                String compact = DiagLog.getCompactSummary(header, 280);
                 cm.setPrimaryClip(ClipData.newPlainText("MiRearPetOffline_DiagLog", compact));
                 showToast("已复制日志(" + compact.length() + "字)");
             }

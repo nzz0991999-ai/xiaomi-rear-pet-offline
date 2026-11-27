@@ -70,7 +70,7 @@ public final class RearShellHelper {
             }
 
             if ("withdraw".equals(mode)) {
-                handleWithdraw(atm, getRoots, moveRoot, pkg);
+                handleWithdraw(atm, atmClass, getRoots, moveRoot, pkg);
                 return;
             }
 
@@ -430,19 +430,24 @@ public final class RearShellHelper {
         System.exit(1);
     }
 
-    private static void handleWithdraw(Object atm, Method getRoots, Method moveRoot, String pkg) throws Exception {
-        dumpRoots("before_withdraw", atm, getRoots, pkg);
+    private static void handleWithdraw(Object atm, Class<?> atmClass, Method getRoots, Method moveRoot, String pkg) throws Exception {
         TaskInfo existing = findTask(atm, getRoots, pkg, "RearPetActivity");
         if (existing == null) {
             System.out.println("OK:none");
             System.exit(0);
         }
         System.out.println("LOG:withdraw_target root=" + existing.rootId + " disp=" + existing.displayId + " vis=" + existing.visible);
-        if (existing.displayId != 0) {
-            moveRoot.invoke(atm, existing.rootId, 0);
-            try { Thread.sleep(260); } catch (InterruptedException ignored) {}
+        // Remove the task directly on Display 1 without ever bouncing/flashing it onto Display 0!
+        tryRemoveTask(atm, atmClass, existing.rootId);
+        try { Thread.sleep(160); } catch (InterruptedException ignored) {}
+        TaskInfo check = findTask(atm, getRoots, pkg, "RearPetActivity");
+        if (check != null) {
+            if (check.displayId != 0) {
+                try { moveRoot.invoke(atm, check.rootId, 0); } catch (Throwable ignored) {}
+                try { Thread.sleep(120); } catch (InterruptedException ignored) {}
+            }
+            tryRemoveTask(atm, atmClass, check.rootId);
         }
-        dumpRoots("after_withdraw", atm, getRoots, pkg);
         System.out.println("OK:withdrawn:root=" + existing.rootId);
         System.exit(0);
     }

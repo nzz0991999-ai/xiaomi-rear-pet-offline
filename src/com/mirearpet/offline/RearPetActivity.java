@@ -404,7 +404,47 @@ public class RearPetActivity extends Activity {
         }
     }
 
+    private boolean isMainScreenBounds() {
+        int w = getResources().getDisplayMetrics().widthPixels;
+        int h = getResources().getDisplayMetrics().heightPixels;
+        return Math.max(w, h) >= 1600;
+    }
+
+    private boolean abortIfBouncedToMainScreen(String where) {
+        if (isFrontFullscreenMode() || !hasEverBeenOnRearDisplay) return false;
+        int dId = currentDisplayId();
+        if (dId == 0 || isMainScreenBounds()) {
+            int w = getResources().getDisplayMetrics().widthPixels;
+            int h = getResources().getDisplayMetrics().heightPixels;
+            DiagLog.log("PetAct", "背屏实例被拉回主屏(" + where + ",d=" + dId + "," + w + "x" + h + ")，立即自毁");
+            if (webView != null) {
+                try {
+                    rootLayout.removeView(webView);
+                    webView.destroy();
+                } catch (Throwable ignored) {}
+                webView = null;
+                webViewCreatedDisplayId = -1;
+            }
+            try {
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            } catch (Throwable ignored) {}
+            try {
+                moveTaskToBack(true);
+            } catch (Throwable ignored) {}
+            try {
+                finishAndRemoveTask();
+            } catch (Throwable ignored) {
+                finish();
+            }
+            return true;
+        }
+        return false;
+    }
+
     private void ensureWebViewReadyIfOnTargetDisplay() {
+        if (abortIfBouncedToMainScreen("ensure")) {
+            return;
+        }
         int dId = currentDisplayId();
         applyRearLockscreenPolicy(dId);
         if (!isFrontFullscreenMode() && dId == 0) {
@@ -415,21 +455,6 @@ public class RearPetActivity extends Activity {
                 } catch (Throwable ignored) {}
                 webView = null;
                 webViewCreatedDisplayId = -1;
-            }
-            if (hasEverBeenOnRearDisplay) {
-                DiagLog.log("PetAct", "背屏实例被退回主屏(d=0)，自动退出以避免遮挡前景应用");
-                try {
-                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-                } catch (Throwable ignored) {}
-                try {
-                    moveTaskToBack(true);
-                } catch (Throwable ignored) {}
-                try {
-                    finishAndRemoveTask();
-                } catch (Throwable ignored) {
-                    finish();
-                }
-                return;
             }
             statusOverlay.setText("正在投射到背屏...");
             statusOverlay.setVisibility(View.VISIBLE);
@@ -582,6 +607,7 @@ public class RearPetActivity extends Activity {
     protected void onStart() {
         super.onStart();
         logLifecycle("onStart");
+        abortIfBouncedToMainScreen("onStart");
     }
 
     @Override
@@ -671,6 +697,7 @@ public class RearPetActivity extends Activity {
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
+            if (abortIfBouncedToMainScreen("focus")) return;
             applyImmersive();
             if (!isFrontFullscreenMode() && currentDisplayId() != 0 && !currentEcoBlack) {
                 lastJsSuspended = false;
