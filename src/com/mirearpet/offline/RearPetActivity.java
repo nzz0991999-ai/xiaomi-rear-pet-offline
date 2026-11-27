@@ -528,12 +528,18 @@ public class RearPetActivity extends Activity {
                 super.onPageFinished(view, url);
                 int dId = currentDisplayId();
                 int dState = ShizukuBridge.getDisplayState(RearPetActivity.this, dId);
+                int curRot = ShizukuBridge.getDisplayRotation(RearPetActivity.this, dId);
+                int offRot = getOfficialRearRotation();
                 DiagLog.log("Web", "onPageFinished d=" + dId + " st=" + dState
+                        + " r=" + curRot + "/" + offRot
                         + " view=" + view.getWidth() + "x" + view.getHeight());
                 if (url != null && !url.startsWith("about:")) {
                     statusOverlay.setVisibility(View.GONE);
-                    if (!isFrontFullscreenMode() && dId != 0 && currentEcoBlack) {
-                        view.evaluateJavascript("window.setPetEcoBlack && window.setPetEcoBlack(true);", null);
+                    if (!isFrontFullscreenMode() && dId != 0) {
+                        pushRearRotationDeltaToJs(dId);
+                        if (currentEcoBlack) {
+                            view.evaluateJavascript("window.setPetEcoBlack && window.setPetEcoBlack(true);", null);
+                        }
                     }
                 }
             }
@@ -576,16 +582,78 @@ public class RearPetActivity extends Activity {
                 + " taskId=" + getTaskId());
     }
 
+    private int getOfficialRearRotation() {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("official_rear_rot", -1);
+    }
+
+    private int rotationToScreenOrientation(boolean naturalIsPortrait, int rot) {
+        if (naturalIsPortrait) {
+            switch (rot) {
+                case 0: return ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+                case 1: return ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+                case 2: return ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
+                case 3: return ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
+                default: return ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+            }
+        } else {
+            switch (rot) {
+                case 0: return ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+                case 1: return ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+                case 2: return ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
+                case 3: return ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
+                default: return ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+            }
+        }
+    }
+
+    private int computeRearRotationDeltaDeg(int dId) {
+        if (isFrontFullscreenMode() || dId == 0 || !hasEverBeenOnRearDisplay) return 0;
+        int curRot = ShizukuBridge.getDisplayRotation(this, dId);
+        int offRot = getOfficialRearRotation();
+        if (curRot >= 0 && offRot >= 0) {
+            int delta = (offRot - curRot + 4) % 4;
+            switch (delta) {
+                case 1: return -90;
+                case 2: return 180;
+                case 3: return 90;
+                default: return 0;
+            }
+        }
+        int w = getResources().getDisplayMetrics().widthPixels;
+        int h = getResources().getDisplayMetrics().heightPixels;
+        return (w > 0 && h > 0 && w < h) ? -90 : 0;
+    }
+
+    private void pushRearRotationDeltaToJs(int dId) {
+        if (isFrontFullscreenMode() || dId == 0 || webView == null) return;
+        int deg = computeRearRotationDeltaDeg(dId);
+        webView.evaluateJavascript("window.setRearRotationDelta && window.setRearRotationDelta(" + deg + ");", null);
+    }
+
     private void ensureRearLandscapeOrientation(int dId) {
         if (isFrontFullscreenMode() || dId == 0 || !hasEverBeenOnRearDisplay) return;
         int w = getResources().getDisplayMetrics().widthPixels;
         int h = getResources().getDisplayMetrics().heightPixels;
-        if (w > 0 && h > 0 && w < h) {
+        int curRot = ShizukuBridge.getDisplayRotation(this, dId);
+        int offRot = getOfficialRearRotation();
+        boolean natPort = ShizukuBridge.isDisplayNaturalPortrait(this, dId);
+
+        if (offRot >= 0 && curRot >= 0 && curRot != offRot) {
+            int targetOri = rotationToScreenOrientation(natPort, offRot);
+            DiagLog.log("Pet", "背屏方向对齐 r=" + curRot + "->" + offRot + " (" + w + "x" + h + ")");
+            try {
+                setRequestedOrientation(targetOri);
+            } catch (Throwable ignored) {}
+        } else if (w > 0 && h > 0 && w < h) {
+            int targetOri = (offRot >= 0)
+                    ? rotationToScreenOrientation(natPort, offRot)
+                    : ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
             DiagLog.log("Pet", "背屏竖屏(" + w + "x" + h + ")，请求横屏");
             try {
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                setRequestedOrientation(targetOri);
             } catch (Throwable ignored) {}
         }
+        pushRearRotationDeltaToJs(dId);
     }
 
     @Override

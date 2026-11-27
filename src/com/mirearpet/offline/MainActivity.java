@@ -88,6 +88,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
         }
 
         ShizukuBridge.requestBinderFromManager(this);
+        ShizukuBridge.captureOfficialRearRotation(this, ShizukuBridge.detectRearDisplayId(this));
         refreshMoodButtonsUi();
         refreshStatusUi();
         checkForUpdate(false);
@@ -97,6 +98,7 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
     protected void onResume() {
         super.onResume();
         ShizukuBridge.requestBinderFromManager(this);
+        ShizukuBridge.captureOfficialRearRotation(this, ShizukuBridge.detectRearDisplayId(this));
         refreshMoodButtonsUi();
         refreshStatusUi();
         checkForUpdate(false);
@@ -668,12 +670,15 @@ public class MainActivity extends Activity implements ShizukuBridge.Listener, Di
             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm != null) {
                 int did = prefs.getInt("display_id", 1);
+                int curRot = ShizukuBridge.getDisplayRotation(this, did);
+                int offRot = prefs.getInt("official_rear_rot", -1);
                 String header = "v" + AppUpdater.getLocalVersionName(this)
                         + " " + Build.MODEL
                         + " A" + Build.VERSION.RELEASE
                         + " Shz=" + (ShizukuBridge.isPermissionGranted() ? "OK" : (ShizukuBridge.isBinderAlive() ? "NO_PERM" : "OFF"))
                         + " Grd=" + (RearGuardService.isRunning ? "ON" : "OFF")
-                        + " d" + did + "=" + ShizukuBridge.getDisplayState(this, did);
+                        + " d" + did + "=" + ShizukuBridge.getDisplayState(this, did)
+                        + " r" + curRot + "/" + offRot;
                 String compact = DiagLog.getCompactSummary(header, 280);
                 cm.setPrimaryClip(ClipData.newPlainText("MiRearPetOffline_DiagLog", compact));
                 showToast("已复制日志(" + compact.length() + "字)");

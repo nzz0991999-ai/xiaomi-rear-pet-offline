@@ -46,9 +46,11 @@
       display: block;
     }
 
-    /* Android 17 / portrait rear-panel fallback: auto-rotate upright landscape */
-    body.rear-portrait-fix .preview-shell,
-    body.rear-portrait-fix #settingsModal {
+    /* Android 17 / display rotation fallback: auto-align exact delta (-90 / 90 / 180 deg) */
+    body.rear-rot-m90 .preview-shell,
+    body.rear-rot-m90 #settingsModal,
+    body.rear-rot-p90 .preview-shell,
+    body.rear-rot-p90 #settingsModal {
       position: fixed;
       top: 50%;
       left: 50%;
@@ -58,11 +60,37 @@
       height: 100vw;
       max-width: none !important;
       max-height: none !important;
-      transform: translate(-50%, -50%) rotate(-90deg);
       transform-origin: center center;
     }
 
-    body.rear-portrait-fix .device-frame {
+    body.rear-rot-m90 .preview-shell,
+    body.rear-rot-m90 #settingsModal {
+      transform: translate(-50%, -50%) rotate(-90deg);
+    }
+
+    body.rear-rot-p90 .preview-shell,
+    body.rear-rot-p90 #settingsModal {
+      transform: translate(-50%, -50%) rotate(90deg);
+    }
+
+    body.rear-rot-180 .preview-shell,
+    body.rear-rot-180 #settingsModal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      right: auto;
+      bottom: auto;
+      width: 100vw;
+      height: 100vh;
+      max-width: none !important;
+      max-height: none !important;
+      transform: translate(-50%, -50%) rotate(180deg);
+      transform-origin: center center;
+    }
+
+    body.rear-rot-m90 .device-frame,
+    body.rear-rot-p90 .device-frame,
+    body.rear-rot-180 .device-frame {
       width: 100% !important;
       height: 100% !important;
       aspect-ratio: auto !important;
@@ -1745,9 +1773,30 @@
         }
       };
 
+      let rearRotDeltaDeg = null; // null = auto detect portrait; otherwise 0 | -90 | 90 | 180 from native Display rotation
+
+      function getEffectiveRearRotDeg() {
+        if (!isStandalone || isPreview) return 0;
+        if (rearRotDeltaDeg !== null) return rearRotDeltaDeg;
+        return window.innerHeight > window.innerWidth ? -90 : 0;
+      }
+
+      function applyRearRotationClass() {
+        const deg = getEffectiveRearRotDeg();
+        document.body.classList.toggle("rear-rot-m90", deg === -90);
+        document.body.classList.toggle("rear-rot-p90", deg === 90);
+        document.body.classList.toggle("rear-rot-180", deg === 180);
+      }
+
+      window.setRearRotationDelta = (deg) => {
+        const norm = (deg === -90 || deg === 90 || deg === 180 || deg === 0) ? deg : 0;
+        if (rearRotDeltaDeg === norm) return;
+        rearRotDeltaDeg = norm;
+        resizeCanvas();
+      };
+
       function resizeCanvas() {
-        const isPortraitRear = isStandalone && !isPreview && window.innerHeight > window.innerWidth;
-        document.body.classList.toggle("rear-portrait-fix", isPortraitRear);
+        applyRearRotationClass();
         const rect = stage.getBoundingClientRect();
         // Use clientWidth/clientHeight so rotated CSS fallback keeps true upright layout dimensions
         const layoutW = stage.clientWidth || rect.width;
@@ -1873,9 +1922,10 @@
 
       function getCanvasPoint(e) {
         const rect = canvas.getBoundingClientRect();
-        if (document.body.classList.contains("rear-portrait-fix")) {
-          return { x: rect.bottom - e.clientY, y: e.clientX - rect.left };
-        }
+        const deg = getEffectiveRearRotDeg();
+        if (deg === -90) return { x: rect.bottom - e.clientY, y: e.clientX - rect.left };
+        if (deg === 90) return { x: e.clientY - rect.top, y: rect.right - e.clientX };
+        if (deg === 180) return { x: rect.right - e.clientX, y: rect.bottom - e.clientY };
         return { x: e.clientX - rect.left, y: e.clientY - rect.top };
       }
 
@@ -1934,8 +1984,8 @@
         clearPressHold();
         if (!longPressed) {
           const pt = getCanvasPoint(e);
-          const isPortrait = document.body.classList.contains("rear-portrait-fix");
-          const isSwipe = isPortrait
+          const deg = getEffectiveRearRotDeg();
+          const isSwipe = (deg === -90 || deg === 90)
             ? Math.abs(e.clientY - downY) > 28
             : Math.abs(e.clientX - downX) > 28;
           triggerTapInteraction(pt.x, pt.y, isSwipe);

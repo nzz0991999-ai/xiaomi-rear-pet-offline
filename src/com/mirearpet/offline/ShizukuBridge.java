@@ -376,6 +376,51 @@ public final class ShizukuBridge {
         return getDisplayState(ctx, displayId) == Display.STATE_OFF;
     }
 
+    public static int getDisplayRotation(Context ctx, int displayId) {
+        DisplayManager dm = (DisplayManager) ctx.getSystemService(Context.DISPLAY_SERVICE);
+        if (dm == null) return -1;
+        Display d = dm.getDisplay(displayId);
+        return d != null ? d.getRotation() : -1;
+    }
+
+    public static boolean isDisplayNaturalPortrait(Context ctx, int displayId) {
+        DisplayManager dm = (DisplayManager) ctx.getSystemService(Context.DISPLAY_SERVICE);
+        if (dm == null) return true;
+        Display d = dm.getDisplay(displayId);
+        if (d == null) return true;
+        Display.Mode mode = d.getMode();
+        if (mode == null) return true;
+        return mode.getPhysicalHeight() > mode.getPhysicalWidth();
+    }
+
+    public static boolean isLandscapeRotation(boolean naturalIsPortrait, int rot) {
+        if (rot < 0 || rot > 3) return false;
+        return naturalIsPortrait ? (rot == 1 || rot == 3) : (rot == 0 || rot == 2);
+    }
+
+    /**
+     * Captures Xiaomi SubScreenLauncher's upright rotation on Display 1 BEFORE our pet occupies it,
+     * and caches it in SharedPreferences so RearPetActivity can auto-align on every model & OS version.
+     */
+    public static int captureOfficialRearRotation(Context ctx, int displayId) {
+        if (ctx == null || displayId <= 0) return -1;
+        android.content.SharedPreferences sp = ctx.getSharedPreferences(RearPetActivity.PREFS_NAME, Context.MODE_PRIVATE);
+        int cached = sp.getInt("official_rear_rot", -1);
+        if (RearPetActivity.hasRearInstance() && RearPetActivity.activeDisplayId == displayId) {
+            return cached;
+        }
+        int rot = getDisplayRotation(ctx, displayId);
+        boolean natPort = isDisplayNaturalPortrait(ctx, displayId);
+        if (isLandscapeRotation(natPort, rot)) {
+            if (rot != cached) {
+                sp.edit().putInt("official_rear_rot", rot).apply();
+                DiagLog.log("Bridge", "记录官方背屏正方向 rot=" + rot + " natPort=" + natPort);
+            }
+            return rot;
+        }
+        return cached;
+    }
+
     public interface LaunchCallback {
         void onComplete(boolean ok, String detail);
     }
@@ -412,6 +457,8 @@ public final class ShizukuBridge {
                         RearPetActivity.finishRearInstanceIfRunning();
                         try { Thread.sleep(550); } catch (InterruptedException ignored) {}
                     }
+                    // Capture Xiaomi's native SubScreenLauncher upright rotation right before projecting!
+                    captureOfficialRearRotation(app, displayId);
 
                     String[] helperCmd = new String[]{
                             "sh", "-c",
