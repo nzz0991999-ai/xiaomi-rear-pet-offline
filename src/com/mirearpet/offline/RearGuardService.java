@@ -372,30 +372,41 @@ public class RearGuardService extends Service {
         if (!force && !ShizukuBridge.isDisplayAwake(this, guardDisplayId)) return;
         if (!ShizukuBridge.isPermissionGranted()) return;
 
-        // Works EVEN WHILE THE FRONT SCREEN IS LOCKED
-        KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
-        boolean keyguardLocked = (km != null && km.isKeyguardLocked());
-        if (keyguardLocked) {
-            if (RearPetActivity.hasRearInstance()) {
-                tryQuickRefrontIfRearAwake("keyguard_locked");
-            }
+        // Explicit user tap on notification "立即拉回背屏": if RearPetActivity was killed, safely re-project it.
+        if (force && !RearPetActivity.hasRearInstance()) {
+            ShizukuBridge.launchOnRearDisplay(this, RearPetActivity.OFFLINE_URL, guardDisplayId, null);
             return;
         }
 
-        if (!force && RearPetActivity.hasRearInstance() && RearPetActivity.activeDisplayId == guardDisplayId) {
+        // Automatic background guard NEVER cold-launches or moves RearPetActivity onto Display 0!
+        if (!RearPetActivity.hasRearInstance()) {
+            return;
+        }
+
+        // Works EVEN WHILE THE FRONT SCREEN IS LOCKED (strictly in-place on Display 1)
+        KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+        boolean keyguardLocked = (km != null && km.isKeyguardLocked());
+        if (keyguardLocked) {
+            tryQuickRefrontIfRearAwake("keyguard_locked");
+            return;
+        }
+
+        if (!force && RearPetActivity.activeDisplayId == guardDisplayId) {
             tryQuickRefrontIfRearAwake("unlocked_fast");
         }
 
         long now = System.currentTimeMillis();
-        if (!force && (now - lastRepinAt) < 3000) return;
+        if (!force && (now - lastRepinAt) < 3500) return;
         if (!force && now < nextAllowedRepinAt) return;
 
         lastRepinAt = now;
         repinInFlight = true;
         ShizukuBridge.guardRepinOnRearDisplay(this, RearPetActivity.OFFLINE_URL, guardDisplayId, (ok, detail) -> {
             repinInFlight = false;
-            if (detail != null && (detail.contains("OK:yield:") || detail.contains("OK:defer_front_busy:"))) {
-                nextAllowedRepinAt = System.currentTimeMillis() + 6000L;
+            if (!ok || (detail != null && (detail.contains("OK:yield:")
+                    || detail.contains("OK:refront_pending:")
+                    || detail.contains("OK:no_rear_task")))) {
+                nextAllowedRepinAt = System.currentTimeMillis() + 8000L;
             }
         });
     }

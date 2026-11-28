@@ -1,6 +1,6 @@
 {
-  "version_code": 11,
-  "version_name": "1.0.10",
+  "version_code": 12,
+  "version_name": "1.0.11",
   "apk_url": "https://github.com/nzz0991999-ai/xiaomi-rear-pet-offline/releases/latest/download/MiRearPet_Offline.apk",
-  "notes": "修复守护模式下手机正面朝上平放桌面再拿起后退回小米默认壁纸的问题：贴桌休眠改为 AMOLED 纯黑零绘制且保持背屏占位不断锁，拿起 0.2 秒无缝亮回大眼睛，绝不切回系统默认壁纸。"
+  "notes": "彻底根除后台守护模式意外把桌宠弹到主屏的问题：移除后台守护中的所有主屏冷重建与移回主屏逻辑，自动守护严格只在背屏原位拉回，从代码根源杜绝解锁或待机时桌宠跳到正面主屏。"
 }

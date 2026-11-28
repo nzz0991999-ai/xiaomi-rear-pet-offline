@@ -303,11 +303,11 @@ public final class RearShellHelper {
     }
 
     /**
-     * Silent background guard restore:
+     * Strictly Display-1-ONLY background guard restore:
      * 1) Yields immediately if Camera or a protected system UI is active on Display 0 or Display 1.
-     * 2) Prefers in-place Display-1 refront without touching Display 0 at all.
-     * 3) Only performs Display-0 staging when RearPetActivity is dead AND Display 0 is on Launcher or our own app,
-     *    and returns Display 0 back to Home Launcher (NEVER hijacking Display 0 with MainActivity).
+     * 2) ONLY performs in-place Display-1 refront (`wakeDisplay` + `moveTaskToFront` + `setFocusedRootTask`).
+     * 3) NEVER moves RearPetActivity back to Display 0 and NEVER launches `am start --display 0` in background,
+     *    making it 100% impossible for Guard Mode to pop or freeze the pet onto the user's main screen!
      */
     private static void handleGuardRepin(Object atm, Class<?> atmClass, Method getRoots, Method moveRoot,
                                          String pkg, int displayId, String url) throws Exception {
@@ -318,118 +318,49 @@ public final class RearShellHelper {
         }
 
         TaskInfo existing = findTask(atm, getRoots, pkg, "RearPetActivity");
-        if (existing != null && existing.displayId == displayId) {
-            if (existing.visible) {
-                System.out.println("OK:already_on_rear:root=" + existing.rootId + ":display=" + displayId);
-                System.exit(0);
-            }
-            // Step A: Try silent in-place refront on Display 1 without ever touching Display 0
-            System.out.println("LOG:guard_refront_inplace root=" + existing.rootId + " d=" + displayId);
-            tryMoveTaskToFront(existing.rootId);
-            try {
-                moveRoot.invoke(atm, existing.rootId, displayId);
-            } catch (Throwable ignored) {}
-            trySetFocusedRootTask(atm, atmClass, existing.rootId);
-            try { Thread.sleep(220); } catch (InterruptedException ignored) {}
-
-            TaskInfo afterInPlace = findTask(atm, getRoots, pkg, "RearPetActivity");
-            if (afterInPlace != null && afterInPlace.displayId == displayId && afterInPlace.visible) {
-                wakeDisplay(displayId);
-                System.out.println("OK:refront_silent:root=" + afterInPlace.rootId + ":display=" + displayId);
-                System.exit(0);
-            }
-            existing = afterInPlace;
-        }
-
-        // Step B: Cold rebuild needed. Only stage on Display 0 when Display 0 is idle on Launcher or our own app!
-        TaskInfo frontTask = findTopVisibleTaskOnDisplay(atm, getRoots, 0);
-        if (!isSafeFrontForStaging(frontTask, pkg)) {
-            String frontComp = frontTask != null ? frontTask.topComponent : "unknown";
-            System.out.println("OK:defer_front_busy:" + frontComp);
-            System.exit(0);
-        }
-
-        blocker = findYieldBlocker(atm, getRoots, pkg, displayId);
-        if (blocker != null) {
-            System.out.println("OK:yield:" + blocker);
-            System.exit(0);
-        }
-
-        boolean frontWasSelf = frontTask != null && frontTask.topComponent != null
-                && frontTask.topComponent.startsWith(pkg + "/");
-        System.out.println("LOG:guard_rebuild front=" + (frontTask != null ? frontTask.topComponent : "null")
-                + " frontWasSelf=" + frontWasSelf);
-
-        if (existing != null && existing.displayId != 0) {
-            moveRoot.invoke(atm, existing.rootId, 0);
-            try { Thread.sleep(450); } catch (InterruptedException ignored) {}
-            existing = findTask(atm, getRoots, pkg, "RearPetActivity");
-        }
-
         if (existing == null) {
-            String startOut = runCmd("am", "start", "-W",
-                    "--display", "0",
-                    "-n", pkg + "/.RearPetActivity",
-                    "--es", "url", url,
-                    "--ez", "rear_mode", "true",
-                    "--ei", "target_display", String.valueOf(displayId));
-            existing = waitForTask(atm, getRoots, pkg, "RearPetActivity", 2200);
-            if (existing == null) {
-                System.out.println("FAIL:guard_task_not_found:" + oneLine(startOut, 160));
-                System.exit(1);
-            }
-            if (existing.displayId != 0) {
-                moveRoot.invoke(atm, existing.rootId, 0);
-                try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-            }
-            try { Thread.sleep(260); } catch (InterruptedException ignored) {}
+            System.out.println("OK:no_rear_task");
+            System.exit(0);
         }
-
-        // Return Display 0 to Home Launcher (or MainActivity ONLY if user was already inside our app)
-        bringFrontCoverToDisplay0(atm, atmClass, getRoots, pkg, frontWasSelf);
-        boolean hiddenOnFront = waitForTaskHiddenOnDisplay0(atm, getRoots, pkg, "RearPetActivity", 2600, frontWasSelf, atmClass);
-        if (!hiddenOnFront) {
-            System.out.println("FAIL:guard_still_visible_on_front:root=" + existing.rootId);
-            tryRemoveTask(atm, atmClass, existing.rootId);
-            System.exit(1);
+        if (existing.displayId != displayId) {
+            // Never allow a stray RearPetActivity task to linger on Display 0
+            if (existing.displayId == 0) {
+                tryRemoveTask(atm, atmClass, existing.rootId);
+            }
+            System.out.println("OK:cleaned_non_rear:d=" + existing.displayId);
+            System.exit(0);
         }
-        // Extra settle window so Android onStop() & SurfaceFlinger Display-0 detach fully commit
-        // (Measured on Xiaomi 17 Pro Max HyperOS: onStop(d=0) fires ~600ms after onPause(d=0))
-        try { Thread.sleep(820); } catch (InterruptedException ignored) {}
-
-        // Re-check blocker right before moving to Display 1 in case Camera opened mid-transition
-        blocker = findYieldBlocker(atm, getRoots, pkg, displayId);
-        if (blocker != null) {
-            tryRemoveTask(atm, atmClass, existing.rootId);
-            System.out.println("OK:yield_mid:" + blocker);
+        if (existing.visible) {
+            System.out.println("OK:already_on_rear:root=" + existing.rootId + ":display=" + displayId);
             System.exit(0);
         }
 
-        TaskInfo readyGuard = findTask(atm, getRoots, pkg, "RearPetActivity");
-        if (readyGuard == null || (readyGuard.displayId == 0 && readyGuard.visible)) {
-            if (readyGuard != null) tryRemoveTask(atm, atmClass, readyGuard.rootId);
-            System.out.println("FAIL:guard_regained_front_before_move");
-            System.exit(1);
-        }
+        // Strict in-place Display-1 refront (NEVER touches Display 0!)
+        System.out.println("LOG:guard_refront_inplace root=" + existing.rootId + " d=" + displayId);
+        wakeDisplay(displayId);
+        try { Thread.sleep(80); } catch (InterruptedException ignored) {}
+        tryMoveTaskToFront(existing.rootId);
+        try {
+            moveRoot.invoke(atm, existing.rootId, displayId);
+        } catch (Throwable ignored) {}
+        trySetFocusedRootTask(atm, atmClass, existing.rootId);
+        try { Thread.sleep(220); } catch (InterruptedException ignored) {}
 
-        moveRoot.invoke(atm, readyGuard.rootId, displayId);
-        try { Thread.sleep(260); } catch (InterruptedException ignored) {}
-        TaskInfo afterMove = findTask(atm, getRoots, pkg, "RearPetActivity");
-        if (afterMove != null && afterMove.displayId == displayId) {
-            if (!afterMove.visible) {
-                trySetFocusedRootTask(atm, atmClass, afterMove.rootId);
-                try { Thread.sleep(160); } catch (InterruptedException ignored) {}
-            }
+        TaskInfo afterInPlace = findTask(atm, getRoots, pkg, "RearPetActivity");
+        if (afterInPlace != null && afterInPlace.displayId == displayId && !afterInPlace.visible) {
+            tryMoveTaskToFront(afterInPlace.rootId);
+            trySetFocusedRootTask(atm, atmClass, afterInPlace.rootId);
+            try { Thread.sleep(160); } catch (InterruptedException ignored) {}
+            afterInPlace = findTask(atm, getRoots, pkg, "RearPetActivity");
+        }
+        if (afterInPlace != null && afterInPlace.displayId == displayId && afterInPlace.visible) {
             wakeDisplay(displayId);
-            System.out.println("OK:guard_rebuilt:root=" + afterMove.rootId + ":display=" + displayId + ":vis=" + afterMove.visible);
+            System.out.println("OK:refront_silent:root=" + afterInPlace.rootId + ":display=" + displayId);
             System.exit(0);
         }
 
-        if (afterMove != null && afterMove.displayId == 0) {
-            tryRemoveTask(atm, atmClass, afterMove.rootId);
-        }
-        System.out.println("FAIL:guard_move_not_confirmed:root=" + readyGuard.rootId);
-        System.exit(1);
+        System.out.println("OK:refront_pending:root=" + existing.rootId);
+        System.exit(0);
     }
 
     private static void handleWithdraw(Object atm, Class<?> atmClass, Method getRoots, Method moveRoot, String pkg) throws Exception {
